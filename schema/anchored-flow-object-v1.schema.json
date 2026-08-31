@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lastdraft.app/schema/anchored-flow-object-v1.schema.json",
+  "title": "LastDraft Anchored Flow Object v1",
+  "description": "Portable persisted state for a freely positioned, semantically anchored image. Resolved document coordinates and responsive fallback state are deliberately absent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "anchor",
+    "placement",
+    "size",
+    "exclusion",
+    "responsivePolicy"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paragraphId", "utf16Offset", "affinity"],
+      "properties": {
+        "paragraphId": {
+          "$ref": "#/$defs/stableId"
+        },
+        "utf16Offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "affinity": {
+          "enum": ["upstream", "downstream"]
+        }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inlineU16", "blockOffset1024"],
+      "properties": {
+        "inlineU16": {
+          "$ref": "#/$defs/u16"
+        },
+        "blockOffset1024": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "size": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idealWidthQ26_6", "idealHeightQ26_6", "maxInlineU16"],
+      "properties": {
+        "idealWidthQ26_6": {
+          "$ref": "#/$defs/positiveLayoutUnit"
+        },
+        "idealHeightQ26_6": {
+          "$ref": "#/$defs/positiveLayoutUnit"
+        },
+        "maxInlineU16": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shape",
+        "marginStartQ26_6",
+        "marginTopQ26_6",
+        "marginEndQ26_6",
+        "marginBottomQ26_6",
+        "minimumFragmentWidthQ26_6"
+      ],
+      "properties": {
+        "shape": {
+          "const": "bounds"
+        },
+        "marginStartQ26_6": {
+          "$ref": "#/$defs/nonnegativeLayoutUnit"
+        },
+        "marginTopQ26_6": {
+          "$ref": "#/$defs/nonnegativeLayoutUnit"
+        },
+        "marginEndQ26_6": {
+          "$ref": "#/$defs/nonnegativeLayoutUnit"
+        },
+        "marginBottomQ26_6": {
+          "$ref": "#/$defs/nonnegativeLayoutUnit"
+        },
+        "minimumFragmentWidthQ26_6": {
+          "$ref": "#/$defs/nonnegativeLayoutUnit"
+        }
+      }
+    },
+    "responsivePolicy": {
+      "const": "scale-then-centered-block-v1"
+    }
+  },
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "u16": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "positiveLayoutUnit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "nonnegativeLayoutUnit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    }
+  }
+}

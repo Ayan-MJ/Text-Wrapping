@@ -1,0 +1,15 @@
+{
+  "name": "@lastdraft/flow-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "build:wasm": "cargo build --manifest-path ../Cargo.toml --target wasm32-unknown-unknown --release --offline && node scripts/copy-wasm.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:wasm && node --experimental-strip-types --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

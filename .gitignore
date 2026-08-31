@@ -1,0 +1,6 @@
+/target/
+/web/node_modules/
+/apple/.build/
+/apple/.swiftpm/
+*.swp
+.DS_Store

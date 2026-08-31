@@ -1,0 +1,6 @@
+module CLastDraftFlow [system] {
+    header "lastdraft_flow.h"
+    link "lastdraft_flow"
+    export *
+}
+
