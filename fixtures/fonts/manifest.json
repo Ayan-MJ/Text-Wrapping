@@ -1,0 +1,37 @@
+{
+  "license": "SIL Open Font License 1.1",
+  "licenseFile": "OFL.txt",
+  "source": "https://github.com/google/fonts/tree/main/ofl",
+  "fonts": [
+    {
+      "id": "fixture-noto-sans",
+      "file": "NotoSans-Variable.ttf",
+      "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d"
+    },
+    {
+      "id": "fixture-noto-sans-italic",
+      "file": "NotoSans-Italic-Variable.ttf",
+      "sha256": "58e6e0ebd1931b29a365aa2d3e2ee9a9e831a3af7cf3ad1462d4e72154f0b291"
+    },
+    {
+      "id": "fixture-noto-devanagari",
+      "file": "NotoSansDevanagari-Variable.ttf",
+      "sha256": "9ce7b04f60e363d8870e5997744cf85cf69d38a4d7d129d364d92a3b14b461d7"
+    },
+    {
+      "id": "fixture-noto-arabic",
+      "file": "NotoSansArabic-Variable.ttf",
+      "sha256": "63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e"
+    },
+    {
+      "id": "fixture-noto-hebrew",
+      "file": "NotoSansHebrew-Variable.ttf",
+      "sha256": "7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88"
+    },
+    {
+      "id": "fixture-noto-jp",
+      "file": "NotoSansJP-Variable.ttf",
+      "sha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f"
+    }
+  ]
+}

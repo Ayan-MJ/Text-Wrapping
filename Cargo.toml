@@ -11,6 +11,13 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rustybuzz = "=0.20.1"
+sha2 = "0.11.0"
+unicode-linebreak = "=0.1.5"
+unicode-bidi = "=0.3.18"
+unicode-script = "=0.5.8"
+unicode-segmentation = "=1.13.3"
+unicode-vo = "=0.1.0"
 
 [profile.release]
 lto = true

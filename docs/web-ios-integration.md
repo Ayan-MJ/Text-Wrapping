@@ -22,10 +22,10 @@ A host migration must create an anchor offset and normalized local placement;
 silently treating old canvas coordinates as the new contract would move content.
 
 The engine indexes text in UTF-16, matching browser strings, `NSRange`, TextKit,
-Kotlin/JVM and .NET. Host shaping must emit grapheme clusters in logical order
-with raw 26.6 advances and legal break opportunities. Rendering must use the
-returned fragment ranges and must not ask Canvas or TextKit to independently
-rewrap those ranges.
+Kotlin/JVM and .NET. ABI-v4 rich editor requests register exact font files and
+let Rust own shaping, bidi itemization, line breaking and vertical metrics.
+Rendering must use returned glyph origins and fragment ranges and must not ask
+Canvas or TextKit to independently rewrap them.
 
 ## Web
 
@@ -75,6 +75,12 @@ The controller performs hit testing and pointer capture. Every move calls the
 Rust drag-normalization function, persists only normalized local placement, and
 lets the host rerun layout for immediate exclusion reflow.
 
+For ABI-v4 editor surfaces, use `EditorSnapshotRequestV2` and
+`renderEditorGeometry`. The glyph callback receives page coordinates and an
+`orientation` value. Rotate only `sideways` glyph items by 90 degrees; upright
+vertical glyphs already use the font's vertical substitutions and metrics.
+Use `normalizedPlacementForDragV4` for all new drag code.
+
 ## iOS
 
 `apple/Artifacts/CLastDraftFlow.xcframework` contains:
@@ -107,6 +113,11 @@ flowView.paragraphLineHeightsQ26_6 = Dictionary(
 )
 flowView.layout = try engine.layout(request)
 ```
+
+For an ABI-v4 editor snapshot, set `flowView.editorGeometry`. The delegate's
+positioned-glyph callback receives the per-glyph clockwise rotation needed for
+sideways vertical items. The view derives each anchored object's writing mode
+and calls the v4 axis-aware drag function automatically.
 
 SwiftUI uses `LastDraftFlowCanvas`, backed by the same UIKit view. Construct a
 `LastDraftFlowRenderer` with text, image and placement callbacks, then pass the

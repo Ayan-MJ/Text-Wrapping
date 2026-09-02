@@ -1,0 +1,98 @@
+{
+  "version": 2,
+  "content": {
+    "xQ26_6": 0,
+    "yQ26_6": 0,
+    "widthQ26_6": 16640,
+    "heightQ26_6": 19200
+  },
+  "paragraphs": [
+    {
+      "paragraph": {
+        "id": "bidi-horizontal",
+        "text": "مرحبا، שלום English 123!",
+        "baseDirection": "auto",
+        "writingMode": "horizontalTb",
+        "textOrientation": "mixed",
+        "runs": [
+          {
+            "utf16Start": 0,
+            "utf16End": 7,
+            "style": {
+              "fontId": "fixture-noto-arabic",
+              "fontSizeQ26_6": 1152,
+              "language": "ar",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 269488383,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 7,
+            "utf16End": 12,
+            "style": {
+              "fontId": "fixture-noto-hebrew",
+              "fontSizeQ26_6": 1152,
+              "language": "he",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 269488383,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 12,
+            "utf16End": 24,
+            "style": {
+              "fontId": "fixture-noto-sans",
+              "fontSizeQ26_6": 1152,
+              "language": "en",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 269488383,
+              "underline": false,
+              "strikethrough": false
+            }
+          }
+        ]
+      },
+      "style": {
+        "lineHeightQ26_6": 1536,
+        "ascentQ26_6": 1152,
+        "spaceAfterQ26_6": 0
+      }
+    }
+  ],
+  "objects": [
+    {
+      "id": "bidi-picture",
+      "anchor": {
+        "paragraphId": "bidi-horizontal",
+        "utf16Offset": 0,
+        "affinity": "downstream"
+      },
+      "placement": {
+        "inlineU16": 32768,
+        "blockOffset1024": 0
+      },
+      "size": {
+        "idealWidthQ26_6": 5760,
+        "idealHeightQ26_6": 3840,
+        "maxInlineU16": 65535
+      },
+      "exclusion": {
+        "shape": "bounds",
+        "marginStartQ26_6": 512,
+        "marginBeforeQ26_6": 512,
+        "marginEndQ26_6": 512,
+        "marginAfterQ26_6": 512,
+        "minimumFragmentWidthQ26_6": 2560
+      },
+      "responsivePolicy": "scale-then-centered-block-v1"
+    }
+  ],
+  "caretWidthQ26_6": 64
+}
