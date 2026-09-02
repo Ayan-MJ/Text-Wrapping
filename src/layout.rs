@@ -5,7 +5,8 @@ use crate::fixed::{scale_block_offset, scale_ratio};
 use crate::geometry::subtract_intervals;
 use crate::{
     AnchorAffinity, Cluster, FlowFragment, FlowLayout, FlowLine, FlowObject, Interval,
-    LayoutRequest, LayoutUnit, ObjectLayoutMode, Paragraph, ParagraphLayout, Rect, ResolvedObject,
+    Insets, LayoutRequest, LayoutUnit, ObjectLayoutMode, Paragraph, ParagraphLayout, Rect,
+    ResolvedObject, TextAlignment, TextDirection, WritingMode,
 };
 
 const MAX_LINES_PER_PARAGRAPH: usize = 1_000_000;
@@ -13,6 +14,7 @@ const MAX_LINES_PER_PARAGRAPH: usize = 1_000_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LayoutError {
     InvalidContentWidth,
+    InvalidContentHeight,
     DuplicateParagraphId(String),
     DuplicateObjectId(String),
     MissingAnchorParagraph {
@@ -42,6 +44,9 @@ impl fmt::Display for LayoutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidContentWidth => write!(f, "content width must be positive"),
+            Self::InvalidContentHeight => {
+                write!(f, "content height must be positive for vertical writing")
+            }
             Self::DuplicateParagraphId(id) => write!(f, "duplicate paragraph id {id}"),
             Self::DuplicateObjectId(id) => write!(f, "duplicate object id {id}"),
             Self::MissingAnchorParagraph {
@@ -108,47 +113,117 @@ pub fn layout(request: &LayoutRequest) -> Result<FlowLayout, LayoutError> {
 
     let mut resolved_objects = Vec::with_capacity(request.objects.len());
     let mut paragraph_layouts = Vec::with_capacity(request.paragraphs.len());
-    let mut cursor_y = request.content.y;
+    // How far we have already advanced along the BLOCK axis. Which physical
+    // axis that is depends on the writing mode: down in horizontal writing,
+    // left from the right edge in vertical-rl (contract §7). Offsetting `y`
+    // unconditionally is what used to stack Japanese paragraphs down the page
+    // instead of beside one another.
+    let mut block_cursor = LayoutUnit::ZERO;
     let mut maximum_bottom = request.content.y;
+    let mut maximum_right = request.content.x;
+    let mut minimum_left = request.content.x;
 
     for paragraph in &request.paragraphs {
-        let paragraph_top = cursor_y;
+        let paragraph_region = block_region(request.content, block_cursor, paragraph.writing_mode);
 
         if let Some(objects) = objects_by_paragraph.get(paragraph.id.as_str()) {
             for object in objects {
                 let anchor_line = reference_line_for_anchor(
                     paragraph,
-                    request.content.width,
+                    inline_extent(paragraph_region, paragraph.writing_mode),
                     object.anchor.utf16_offset,
                     object.anchor.affinity,
                 );
                 let resolved = resolve_object(
                     object,
-                    request.content,
-                    paragraph_top,
+                    paragraph_region,
                     anchor_line,
                     paragraph.style.line_height,
+                    paragraph.writing_mode,
+                    paragraph.base_direction,
                 );
                 maximum_bottom = maximum_bottom.max(resolved.frame.bottom());
+                maximum_right = maximum_right.max(resolved.frame.right());
+                minimum_left = minimum_left.min(resolved.frame.x);
                 resolved_objects.push(resolved);
             }
         }
 
-        let paragraph_layout =
-            flow_paragraph(paragraph, paragraph_top, request.content, &resolved_objects)?;
-        cursor_y = paragraph_layout.bottom + paragraph.style.space_after;
+        let paragraph_layout = flow_paragraph(paragraph, paragraph_region, &resolved_objects)?;
+        block_cursor = block_cursor
+            + block_extent(paragraph.style.line_height, paragraph_layout.lines.len())
+            + paragraph.style.space_after;
         maximum_bottom = maximum_bottom.max(paragraph_layout.bottom);
+        maximum_right = maximum_right.max(paragraph_layout.bounds.right());
+        minimum_left = minimum_left.min(paragraph_layout.bounds.x);
         paragraph_layouts.push(paragraph_layout);
     }
 
     resolved_objects.sort_by(|left, right| left.id.cmp(&right.id));
-    let content_bottom = maximum_bottom.max(cursor_y);
+
+    // The block cursor measures the axis the letter grows along, so it is the
+    // one that carries a trailing `space_after`. In horizontal writing that is
+    // the height, and this reduces to exactly the previous formula.
+    let vertical = request
+        .paragraphs
+        .iter()
+        .any(|paragraph| paragraph.writing_mode.is_vertical());
+    let (content_width, content_height) = if vertical {
+        (
+            (maximum_right - minimum_left).max(block_cursor),
+            maximum_bottom - request.content.y,
+        )
+    } else {
+        (
+            maximum_right - minimum_left,
+            maximum_bottom.max(request.content.y + block_cursor) - request.content.y,
+        )
+    };
 
     Ok(FlowLayout {
         paragraphs: paragraph_layouts,
         objects: resolved_objects,
-        content_height: content_bottom - request.content.y,
+        content_height,
+        content_width,
     })
+}
+
+/// The content box a paragraph occupies once `advanced` block units are spent.
+///
+/// Every downstream reader (`line_geometry`, `paragraph_bounds`,
+/// `resolve_object`) already derives its block start from the correct edge of
+/// this rect per writing mode, so placing the rect correctly is the whole fix.
+fn block_region(content: Rect, advanced: LayoutUnit, writing_mode: WritingMode) -> Rect {
+    match writing_mode {
+        WritingMode::HorizontalTb => Rect::new(
+            content.x,
+            content.y + advanced,
+            content.width,
+            content.height,
+        ),
+        // Columns march rightward from the left edge.
+        WritingMode::VerticalLr => Rect::new(
+            content.x + advanced,
+            content.y,
+            content.width - advanced,
+            content.height,
+        ),
+        // Columns march leftward from the right edge, so shrinking the width
+        // moves `content.right()` — the origin every vertical-rl reader uses.
+        WritingMode::VerticalRl => Rect::new(
+            content.x,
+            content.y,
+            content.width - advanced,
+            content.height,
+        ),
+    }
+}
+
+/// How far `line_count` lines advance along the block axis.
+fn block_extent(line_height: LayoutUnit, line_count: usize) -> LayoutUnit {
+    LayoutUnit::from_raw(
+        (line_count as i64 * line_height.raw() as i64).clamp(0, i32::MAX as i64) as i32,
+    )
 }
 
 /// Converts a pointer-driven object position into LastDraft's portable local
@@ -162,16 +237,57 @@ pub fn normalized_placement_for_drag(
     proposed_x: LayoutUnit,
     proposed_y: LayoutUnit,
 ) -> crate::NormalizedPlacement {
-    let travel = (content.width - object_width).max(LayoutUnit::ZERO);
+    normalized_placement_for_drag_in_mode(
+        content,
+        object_width,
+        LayoutUnit::ZERO,
+        anchor_reference_top,
+        line_height,
+        proposed_x,
+        proposed_y,
+        WritingMode::HorizontalTb,
+    )
+}
+
+/// Axis-aware ABI-v4 drag conversion. The anchor reference is a physical
+/// coordinate on the block axis; positive block offsets always follow the
+/// writing mode's line-progression direction.
+#[allow(clippy::too_many_arguments)]
+pub fn normalized_placement_for_drag_in_mode(
+    content: Rect,
+    object_width: LayoutUnit,
+    object_height: LayoutUnit,
+    anchor_reference_block_start: LayoutUnit,
+    line_height: LayoutUnit,
+    proposed_x: LayoutUnit,
+    proposed_y: LayoutUnit,
+    writing_mode: WritingMode,
+) -> crate::NormalizedPlacement {
+    let (travel, local_inline, block_delta) = match writing_mode {
+        WritingMode::HorizontalTb => (
+            (content.width - object_width).max(LayoutUnit::ZERO),
+            proposed_x - content.x,
+            proposed_y - anchor_reference_block_start,
+        ),
+        WritingMode::VerticalLr => (
+            (content.height - object_height).max(LayoutUnit::ZERO),
+            proposed_y - content.y,
+            proposed_x - anchor_reference_block_start,
+        ),
+        WritingMode::VerticalRl => (
+            (content.height - object_height).max(LayoutUnit::ZERO),
+            proposed_y - content.y,
+            anchor_reference_block_start - (proposed_x + object_width),
+        ),
+    };
     let inline_position = if travel == LayoutUnit::ZERO {
         crate::Normalized::CENTER
     } else {
-        let local_x = (proposed_x - content.x).clamp(LayoutUnit::ZERO, travel);
-        let numerator = local_x.raw() as i64 * u16::MAX as i64 + travel.raw() as i64 / 2;
+        let local_inline = local_inline.clamp(LayoutUnit::ZERO, travel);
+        let numerator = local_inline.raw() as i64 * u16::MAX as i64 + travel.raw() as i64 / 2;
         crate::Normalized::from_raw((numerator / travel.raw() as i64) as u16)
     };
 
-    let block_delta = proposed_y - anchor_reference_top;
     let block_offset = if line_height <= LayoutUnit::ZERO {
         0
     } else {
@@ -198,6 +314,9 @@ fn validate(request: &LayoutRequest) -> Result<(), LayoutError> {
 
     let mut paragraph_ids: HashSet<&str> = HashSet::with_capacity(request.paragraphs.len());
     for paragraph in &request.paragraphs {
+        if paragraph.writing_mode.is_vertical() && request.content.height <= LayoutUnit::ZERO {
+            return Err(LayoutError::InvalidContentHeight);
+        }
         if paragraph.id.is_empty() || !paragraph_ids.insert(paragraph.id.as_str()) {
             return Err(LayoutError::DuplicateParagraphId(paragraph.id.clone()));
         }
@@ -272,10 +391,10 @@ fn validate(request: &LayoutRequest) -> Result<(), LayoutError> {
             return Err(LayoutError::InvalidObjectSize(object.id.clone()));
         }
         let margin = object.exclusion.margin;
-        if margin.start < LayoutUnit::ZERO
-            || margin.top < LayoutUnit::ZERO
-            || margin.end < LayoutUnit::ZERO
-            || margin.bottom < LayoutUnit::ZERO
+        if margin.inline_start < LayoutUnit::ZERO
+            || margin.block_start < LayoutUnit::ZERO
+            || margin.inline_end < LayoutUnit::ZERO
+            || margin.block_end < LayoutUnit::ZERO
             || object.exclusion.minimum_fragment_width < LayoutUnit::ZERO
         {
             return Err(LayoutError::InvalidExclusionMargin(object.id.clone()));
@@ -287,47 +406,109 @@ fn validate(request: &LayoutRequest) -> Result<(), LayoutError> {
 fn resolve_object(
     object: &FlowObject,
     content: Rect,
-    paragraph_top: LayoutUnit,
     anchor_line: usize,
     line_height: LayoutUnit,
+    writing_mode: WritingMode,
+    base_direction: TextDirection,
 ) -> ResolvedObject {
-    let maximum_width = object
-        .size
-        .max_inline_fraction
-        .of(content.width)
-        .min(content.width);
-    let width = object.size.ideal_width.min(maximum_width);
-    let height = scale_ratio(
-        object.size.ideal_height,
-        width.raw(),
-        object.size.ideal_width.raw(),
+    // The document stores margins logically; which physical side each lands on
+    // depends on the paragraph's RESOLVED direction, which only exists here.
+    let margin = object.exclusion.margin.resolve(writing_mode, base_direction);
+    let (width, height) = match writing_mode {
+        WritingMode::HorizontalTb => {
+            let maximum_width = object
+                .size
+                .max_inline_fraction
+                .of(content.width)
+                .min(content.width);
+            let width = object.size.ideal_width.min(maximum_width);
+            let height = scale_ratio(
+                object.size.ideal_height,
+                width.raw(),
+                object.size.ideal_width.raw(),
+            );
+            (width, height)
+        }
+        WritingMode::VerticalRl | WritingMode::VerticalLr => {
+            let maximum_height = object
+                .size
+                .max_inline_fraction
+                .of(content.height)
+                .min(content.height);
+            let height = object.size.ideal_height.min(maximum_height);
+            let width = scale_ratio(
+                object.size.ideal_width,
+                height.raw(),
+                object.size.ideal_height.raw(),
+            );
+            (width, height)
+        }
+    };
+    let line_delta = LayoutUnit::from_raw(
+        (anchor_line as i64 * line_height.raw() as i64).clamp(i32::MIN as i64, i32::MAX as i64)
+            as i32,
     );
-    let horizontal_travel = content.width - width;
-    let user_x = content.x + object.placement.inline_position.of(horizontal_travel);
-    let anchor_top = paragraph_top
-        + LayoutUnit::from_raw(
-            (anchor_line as i64 * line_height.raw() as i64).clamp(i32::MIN as i64, i32::MAX as i64)
-                as i32,
-        );
-    let y = anchor_top + scale_block_offset(line_height, object.placement.block_offset);
-    let mut frame = Rect::new(user_x, y, width, height);
-    let mut exclusion_frame = clipped_exclusion(frame, object, content);
+    let block_delta = scale_block_offset(line_height, object.placement.block_offset);
+    let (anchor_reference, mut frame) = match writing_mode {
+        WritingMode::HorizontalTb => {
+            let travel = content.width - width;
+            let x = content.x + object.placement.inline_position.of(travel);
+            let reference = content.y + line_delta;
+            (
+                reference,
+                Rect::new(x, reference + block_delta, width, height),
+            )
+        }
+        WritingMode::VerticalLr => {
+            let travel = content.height - height;
+            let y = content.y + object.placement.inline_position.of(travel);
+            let reference = content.x + line_delta;
+            (
+                reference,
+                Rect::new(reference + block_delta, y, width, height),
+            )
+        }
+        WritingMode::VerticalRl => {
+            let travel = content.height - height;
+            let y = content.y + object.placement.inline_position.of(travel);
+            let reference = content.right() - line_delta;
+            (
+                reference,
+                Rect::new(reference - width - block_delta, y, width, height),
+            )
+        }
+    };
+    let mut exclusion_frame = clipped_exclusion(frame, margin, content, writing_mode);
 
-    let start_corridor = exclusion_frame.x - content.x;
-    let end_corridor = content.right() - exclusion_frame.right();
+    let (start_corridor, end_corridor) = match writing_mode {
+        WritingMode::HorizontalTb => (
+            exclusion_frame.x - content.x,
+            content.right() - exclusion_frame.right(),
+        ),
+        WritingMode::VerticalRl | WritingMode::VerticalLr => (
+            exclusion_frame.y - content.y,
+            content.bottom() - exclusion_frame.bottom(),
+        ),
+    };
     let largest_corridor = start_corridor.max(end_corridor);
     let cannot_support_side_flow = largest_corridor <= LayoutUnit::ZERO
         || largest_corridor < object.exclusion.minimum_fragment_width;
 
     let mode = if cannot_support_side_flow {
-        frame.x = content.x + LayoutUnit::from_raw(horizontal_travel.raw() / 2);
-        let vertical_exclusion = frame.expanded(object.exclusion.margin);
-        exclusion_frame = Rect::new(
-            content.x,
-            vertical_exclusion.y,
-            content.width,
-            vertical_exclusion.height,
-        );
+        match writing_mode {
+            WritingMode::HorizontalTb => {
+                let travel = content.width - width;
+                frame.x = content.x + LayoutUnit::from_raw(travel.raw() / 2);
+                let expanded = frame.expanded(margin);
+                exclusion_frame = Rect::new(content.x, expanded.y, content.width, expanded.height);
+            }
+            WritingMode::VerticalRl | WritingMode::VerticalLr => {
+                let travel = content.height - height;
+                frame.y = content.y + LayoutUnit::from_raw(travel.raw() / 2);
+                let expanded = frame.expanded(margin);
+                exclusion_frame = Rect::new(expanded.x, content.y, expanded.width, content.height);
+            }
+        }
         ObjectLayoutMode::BlockFallback
     } else {
         ObjectLayoutMode::UserPositioned
@@ -336,7 +517,8 @@ fn resolve_object(
     ResolvedObject {
         id: object.id.clone(),
         anchor: object.anchor.clone(),
-        anchor_reference_top: anchor_top,
+        anchor_reference_top: anchor_reference,
+        anchor_reference_block_start: anchor_reference,
         frame,
         exclusion_frame,
         mode,
@@ -344,39 +526,65 @@ fn resolve_object(
     }
 }
 
-fn clipped_exclusion(frame: Rect, object: &FlowObject, content: Rect) -> Rect {
-    let expanded = frame.expanded(object.exclusion.margin);
-    let start = expanded.x.max(content.x);
-    let end = expanded.right().min(content.right());
-    Rect::new(
-        start,
-        expanded.y,
-        (end - start).max(LayoutUnit::ZERO),
-        expanded.height,
-    )
+fn clipped_exclusion(
+    frame: Rect,
+    margin: Insets,
+    content: Rect,
+    writing_mode: WritingMode,
+) -> Rect {
+    let expanded = frame.expanded(margin);
+    match writing_mode {
+        WritingMode::HorizontalTb => {
+            let start = expanded.x.max(content.x);
+            let end = expanded.right().min(content.right());
+            Rect::new(
+                start,
+                expanded.y,
+                (end - start).max(LayoutUnit::ZERO),
+                expanded.height,
+            )
+        }
+        WritingMode::VerticalRl | WritingMode::VerticalLr => {
+            let start = expanded.y.max(content.y);
+            let end = expanded.bottom().min(content.bottom());
+            Rect::new(
+                expanded.x,
+                start,
+                expanded.width,
+                (end - start).max(LayoutUnit::ZERO),
+            )
+        }
+    }
 }
 
 fn flow_paragraph(
     paragraph: &Paragraph,
-    paragraph_top: LayoutUnit,
     content: Rect,
     objects: &[ResolvedObject],
 ) -> Result<ParagraphLayout, LayoutError> {
     let mut lines = Vec::new();
     let mut cluster_index = 0;
-    let mut line_top = paragraph_top;
+    let mut line_index = 0_usize;
 
     // Empty paragraphs retain one line so their semantic anchor has geometry.
     if paragraph.clusters.is_empty() {
+        let geometry = line_geometry(paragraph, content, 0);
         lines.push(FlowLine {
-            top: line_top,
-            baseline: line_top + paragraph.style.ascent,
+            top: geometry.top,
+            baseline: geometry.baseline,
+            writing_mode: paragraph.writing_mode,
+            block_start: geometry.block_start,
+            inline_start: geometry.inline_start,
             fragments: Vec::new(),
         });
+        let bounds = paragraph_bounds(paragraph, content, 1);
         return Ok(ParagraphLayout {
             paragraph_id: paragraph.id.clone(),
-            top: paragraph_top,
-            bottom: line_top + paragraph.style.line_height,
+            top: bounds.y,
+            bottom: bounds.bottom(),
+            bounds,
+            base_direction: paragraph.base_direction,
+            writing_mode: paragraph.writing_mode,
             lines,
         });
     }
@@ -386,9 +594,19 @@ fn flow_paragraph(
             return Err(LayoutError::LayoutDidNotAdvance(paragraph.id.clone()));
         }
 
-        let line_bottom = line_top + paragraph.style.line_height;
-        let (available, minimum_fragment_width) =
-            available_intervals(content, line_top, line_bottom, objects);
+        let geometry = line_geometry(paragraph, content, line_index);
+        let (mut available, minimum_fragment_width) = available_intervals(
+            content,
+            geometry.band_start,
+            geometry.band_end,
+            paragraph.writing_mode,
+            paragraph.base_direction,
+            paragraph.style.indent,
+            objects,
+        );
+        if paragraph.base_direction == TextDirection::RightToLeft {
+            available.reverse();
+        }
         let available: Vec<Interval> = available
             .into_iter()
             .filter(|interval| interval.width() >= minimum_fragment_width)
@@ -410,17 +628,32 @@ fn flow_paragraph(
                 cluster_index,
                 interval.width(),
                 widest_remaining,
-                content.width,
+                inline_extent(content, paragraph.writing_mode),
             ) {
                 let start = paragraph.clusters[cluster_index].utf16_start;
                 let end = paragraph.clusters[fit.end_index - 1].utf16_end;
-                fragments.push(FlowFragment {
-                    rect: Rect::new(
-                        interval.start,
-                        line_top,
+                let inline_start = aligned_inline_start(
+                    interval,
+                    fit.used_width,
+                    paragraph.style.alignment,
+                    paragraph.base_direction,
+                );
+                let fragment_rect = match paragraph.writing_mode {
+                    WritingMode::HorizontalTb => Rect::new(
+                        inline_start,
+                        geometry.block_start,
                         fit.used_width,
                         paragraph.style.line_height,
                     ),
+                    WritingMode::VerticalRl | WritingMode::VerticalLr => Rect::new(
+                        geometry.block_start,
+                        inline_start,
+                        paragraph.style.line_height,
+                        fit.used_width,
+                    ),
+                };
+                fragments.push(FlowFragment {
+                    rect: fragment_rect,
                     utf16_start: start,
                     utf16_end: end,
                 });
@@ -429,11 +662,14 @@ fn flow_paragraph(
         }
 
         lines.push(FlowLine {
-            top: line_top,
-            baseline: line_top + paragraph.style.ascent,
+            top: geometry.top,
+            baseline: geometry.baseline,
+            writing_mode: paragraph.writing_mode,
+            block_start: geometry.block_start,
+            inline_start: geometry.inline_start,
             fragments,
         });
-        line_top += paragraph.style.line_height;
+        line_index += 1;
 
         // It is valid not to advance while a full-width fallback exclusion is
         // active. The line safety limit handles malformed unbounded geometry.
@@ -442,42 +678,202 @@ fn flow_paragraph(
         }
     }
 
+    let bounds = paragraph_bounds(paragraph, content, line_index);
     Ok(ParagraphLayout {
         paragraph_id: paragraph.id.clone(),
-        top: paragraph_top,
-        bottom: line_top,
+        top: bounds.y,
+        bottom: bounds.bottom(),
+        bounds,
+        base_direction: paragraph.base_direction,
+        writing_mode: paragraph.writing_mode,
         lines,
     })
 }
 
+/// Where a fragment starts inside the space available to it.
+///
+/// Alignment is LOGICAL, so it resolves against the paragraph's direction:
+/// `Start` is the near edge of the interval in ltr and the far edge in rtl, and
+/// the same rule carries into vertical writing, where the inline axis runs down
+/// the column.
+///
+/// `Justify` currently resolves as `Start`. Stretching a line needs slack
+/// distributed between its clusters, which is glyph-positioning work in the
+/// snapshot rather than interval arithmetic here; until that exists, a
+/// justified paragraph is set flush at its start edge. A test pins this so it
+/// cannot be mistaken for finished.
+fn aligned_inline_start(
+    interval: Interval,
+    used_width: LayoutUnit,
+    alignment: TextAlignment,
+    base_direction: TextDirection,
+) -> LayoutUnit {
+    let slack = (interval.width() - used_width).max(LayoutUnit::ZERO);
+    let rtl = base_direction == TextDirection::RightToLeft;
+    match alignment {
+        TextAlignment::Center => interval.start + LayoutUnit::from_raw(slack.raw() / 2),
+        TextAlignment::Start | TextAlignment::Justify => {
+            if rtl {
+                interval.end - used_width
+            } else {
+                interval.start
+            }
+        }
+        TextAlignment::End => {
+            if rtl {
+                interval.start
+            } else {
+                interval.end - used_width
+            }
+        }
+    }
+}
+
 fn available_intervals(
     content: Rect,
-    line_top: LayoutUnit,
-    line_bottom: LayoutUnit,
+    band_start: LayoutUnit,
+    band_end: LayoutUnit,
+    writing_mode: WritingMode,
+    base_direction: TextDirection,
+    indent: LayoutUnit,
     objects: &[ResolvedObject],
 ) -> (Vec<Interval>, LayoutUnit) {
     let mut blocked = Vec::new();
     let mut minimum_fragment_width = LayoutUnit::ZERO;
     for object in objects {
-        if object
-            .exclusion_frame
-            .intersects_vertical_band(line_top, line_bottom)
-        {
-            blocked.push(Interval {
-                start: object.exclusion_frame.x,
-                end: object.exclusion_frame.right(),
+        let intersects = match writing_mode {
+            WritingMode::HorizontalTb => object
+                .exclusion_frame
+                .intersects_vertical_band(band_start, band_end),
+            WritingMode::VerticalRl | WritingMode::VerticalLr => {
+                object.exclusion_frame.width > LayoutUnit::ZERO
+                    && object.exclusion_frame.x < band_end
+                    && object.exclusion_frame.right() > band_start
+            }
+        };
+        if intersects {
+            blocked.push(match writing_mode {
+                WritingMode::HorizontalTb => Interval {
+                    start: object.exclusion_frame.x,
+                    end: object.exclusion_frame.right(),
+                },
+                WritingMode::VerticalRl | WritingMode::VerticalLr => Interval {
+                    start: object.exclusion_frame.y,
+                    end: object.exclusion_frame.bottom(),
+                },
             });
             minimum_fragment_width = minimum_fragment_width.max(object.minimum_fragment_width);
         }
     }
-    let available = subtract_intervals(
-        Interval {
+    let mut container = match writing_mode {
+        WritingMode::HorizontalTb => Interval {
             start: content.x,
             end: content.right(),
         },
-        &mut blocked,
-    );
+        WritingMode::VerticalRl | WritingMode::VerticalLr => Interval {
+            start: content.y,
+            end: content.bottom(),
+        },
+    };
+    // An indent eats into the INLINE START of the line, which is the near edge
+    // in ltr and the far edge in rtl. In vertical writing the inline axis runs
+    // down the column, so the same rule indents from the top.
+    if indent > LayoutUnit::ZERO {
+        let indent = indent.min(container.width());
+        if base_direction == TextDirection::RightToLeft {
+            container.end -= indent;
+        } else {
+            container.start += indent;
+        }
+    }
+    let available = subtract_intervals(container, &mut blocked);
     (available, minimum_fragment_width)
+}
+
+#[derive(Clone, Copy)]
+struct LineGeometry {
+    top: LayoutUnit,
+    baseline: LayoutUnit,
+    block_start: LayoutUnit,
+    inline_start: LayoutUnit,
+    band_start: LayoutUnit,
+    band_end: LayoutUnit,
+}
+
+fn line_geometry(paragraph: &Paragraph, content: Rect, line_index: usize) -> LineGeometry {
+    let delta = LayoutUnit::from_raw(
+        (line_index as i64 * paragraph.style.line_height.raw() as i64)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+    );
+    match paragraph.writing_mode {
+        WritingMode::HorizontalTb => {
+            let top = content.y + delta;
+            LineGeometry {
+                top,
+                baseline: top + paragraph.style.ascent,
+                block_start: top,
+                inline_start: if paragraph.base_direction == TextDirection::RightToLeft {
+                    content.right()
+                } else {
+                    content.x
+                },
+                band_start: top,
+                band_end: top + paragraph.style.line_height,
+            }
+        }
+        WritingMode::VerticalLr => {
+            let x = content.x + delta;
+            LineGeometry {
+                top: content.y,
+                baseline: x + paragraph.style.ascent,
+                block_start: x,
+                inline_start: if paragraph.base_direction == TextDirection::RightToLeft {
+                    content.bottom()
+                } else {
+                    content.y
+                },
+                band_start: x,
+                band_end: x + paragraph.style.line_height,
+            }
+        }
+        WritingMode::VerticalRl => {
+            let right = content.right() - delta;
+            let x = right - paragraph.style.line_height;
+            LineGeometry {
+                top: content.y,
+                baseline: x + paragraph.style.ascent,
+                block_start: x,
+                inline_start: if paragraph.base_direction == TextDirection::RightToLeft {
+                    content.bottom()
+                } else {
+                    content.y
+                },
+                band_start: x,
+                band_end: right,
+            }
+        }
+    }
+}
+
+fn paragraph_bounds(paragraph: &Paragraph, content: Rect, line_count: usize) -> Rect {
+    let extent = block_extent(paragraph.style.line_height, line_count);
+    match paragraph.writing_mode {
+        WritingMode::HorizontalTb => Rect::new(content.x, content.y, content.width, extent),
+        WritingMode::VerticalLr => Rect::new(content.x, content.y, extent, content.height),
+        WritingMode::VerticalRl => Rect::new(
+            content.right() - extent,
+            content.y,
+            extent,
+            content.height,
+        ),
+    }
+}
+
+fn inline_extent(content: Rect, writing_mode: WritingMode) -> LayoutUnit {
+    match writing_mode {
+        WritingMode::HorizontalTb => content.width,
+        WritingMode::VerticalRl | WritingMode::VerticalLr => content.height,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -610,6 +1006,7 @@ mod tests {
                 id: "2".into(),
                 anchor: Default::default(),
                 anchor_reference_top: LayoutUnit::ZERO,
+                anchor_reference_block_start: LayoutUnit::ZERO,
                 frame: Rect::default(),
                 exclusion_frame: Rect::new(
                     LayoutUnit::from_raw(50),
@@ -624,6 +1021,7 @@ mod tests {
                 id: "1".into(),
                 anchor: Default::default(),
                 anchor_reference_top: LayoutUnit::ZERO,
+                anchor_reference_block_start: LayoutUnit::ZERO,
                 frame: Rect::default(),
                 exclusion_frame: Rect::new(
                     LayoutUnit::from_raw(20),
@@ -639,6 +1037,9 @@ mod tests {
             content,
             LayoutUnit::ZERO,
             LayoutUnit::from_raw(10),
+            WritingMode::HorizontalTb,
+            TextDirection::LeftToRight,
+            LayoutUnit::ZERO,
             &objects,
         );
         assert_eq!(

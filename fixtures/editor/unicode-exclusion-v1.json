@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "content": {
+    "xQ26_6": 0,
+    "yQ26_6": 0,
+    "widthQ26_6": 25600,
+    "heightQ26_6": 100000
+  },
+  "caretWidthQ26_6": 64,
+  "paragraphs": [
+    {
+      "paragraph": {
+        "id": "unicode-exclusion",
+        "text": "Regular office fi italic 😀 हिन्दी Hello مرحبا world wrapping around the picture across several fragments.",
+        "runs": [
+          {
+            "utf16Start": 0,
+            "utf16End": 18,
+            "style": {
+              "fontId": "fixture-noto-sans",
+              "fontSizeQ26_6": 1152,
+              "direction": "leftToRight",
+              "language": "en",
+              "features": [{ "tag": "liga", "value": 1 }],
+              "variations": [],
+              "fillRGBA": 255,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 18,
+            "utf16End": 25,
+            "style": {
+              "fontId": "fixture-noto-sans-italic",
+              "fontSizeQ26_6": 1152,
+              "direction": "leftToRight",
+              "language": "en",
+              "features": [{ "tag": "liga", "value": 1 }],
+              "variations": [],
+              "fillRGBA": 255,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 25,
+            "utf16End": 28,
+            "style": {
+              "fontId": "fixture-noto-sans",
+              "fontSizeQ26_6": 1152,
+              "direction": "leftToRight",
+              "language": "en",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 255,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 28,
+            "utf16End": 35,
+            "style": {
+              "fontId": "fixture-noto-devanagari",
+              "fontSizeQ26_6": 1152,
+              "direction": "leftToRight",
+              "language": "hi",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 255,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 35,
+            "utf16End": 41,
+            "style": {
+              "fontId": "fixture-noto-sans",
+              "fontSizeQ26_6": 1152,
+              "direction": "leftToRight",
+              "language": "en",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 255,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 41,
+            "utf16End": 47,
+            "style": {
+              "fontId": "fixture-noto-arabic",
+              "fontSizeQ26_6": 1152,
+              "direction": "rightToLeft",
+              "language": "ar",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 255,
+              "underline": false,
+              "strikethrough": false
+            }
+          },
+          {
+            "utf16Start": 47,
+            "utf16End": 106,
+            "style": {
+              "fontId": "fixture-noto-sans",
+              "fontSizeQ26_6": 1152,
+              "direction": "leftToRight",
+              "language": "en",
+              "features": [{ "tag": "liga", "value": 1 }],
+              "variations": [],
+              "fillRGBA": 255,
+              "underline": false,
+              "strikethrough": false
+            }
+          }
+        ]
+      },
+      "style": {
+        "lineHeightQ26_6": 1536,
+        "ascentQ26_6": 1216,
+        "spaceAfterQ26_6": 0
+      }
+    }
+  ],
+  "objects": [
+    {
+      "id": "fixture-picture",
+      "anchor": {
+        "paragraphId": "unicode-exclusion",
+        "utf16Offset": 0,
+        "affinity": "downstream"
+      },
+      "placement": {
+        "inlineU16": 32768,
+        "blockOffset1024": 0
+      },
+      "size": {
+        "idealWidthQ26_6": 8960,
+        "idealHeightQ26_6": 5760,
+        "maxInlineU16": 65535
+      },
+      "exclusion": {
+        "shape": "bounds",
+        "marginStartQ26_6": 0,
+        "marginBeforeQ26_6": 0,
+        "marginEndQ26_6": 0,
+        "marginAfterQ26_6": 0,
+        "minimumFragmentWidthQ26_6": 4480
+      },
+      "responsivePolicy": "scale-then-centered-block-v1"
+    }
+  ]
+}

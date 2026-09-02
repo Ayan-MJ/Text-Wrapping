@@ -3,6 +3,8 @@ import type {
   FlowLayout,
   FlowLine,
   FlowParagraphLayout,
+  EditorGeometrySnapshotData,
+  PositionedGlyph,
   ResolvedFlowObject,
 } from "./types.ts";
 import { layoutUnitToDip } from "./types.ts";
@@ -28,6 +30,23 @@ export interface CanvasFlowPainter {
     height: number;
   }): void;
 }
+
+export interface CanvasEditorGeometryPainter {
+  /**
+   * Paint one already-shaped glyph at its engine-owned page origin. A sideways
+   * vertical glyph is rotated clockwise individually; the paragraph is never
+   * rendered as a rotated horizontal bitmap.
+   */
+  drawGlyph(input: {
+    context: CanvasRenderingContext2D;
+    glyph: PositionedGlyph;
+    x: number;
+    y: number;
+    rotationRadians: 0 | typeof SIDEWAYS_ROTATION;
+  }): void;
+}
+
+const SIDEWAYS_ROTATION = Math.PI / 2;
 
 /** Draws core-owned geometry without allowing Canvas text metrics to rewrap it. */
 export class LastDraftCanvasRenderer {
@@ -73,6 +92,27 @@ export class LastDraftCanvasRenderer {
     }
   }
 
+  renderEditorGeometry(
+    context: CanvasRenderingContext2D,
+    snapshot: EditorGeometrySnapshotData,
+    painter: CanvasEditorGeometryPainter,
+  ): void {
+    context.save();
+    try {
+      for (const glyph of snapshot.glyphs) {
+        painter.drawGlyph({
+          context,
+          glyph,
+          x: layoutUnitToDip(glyph.pageXQ26_6),
+          y: layoutUnitToDip(glyph.pageYQ26_6),
+          rotationRadians: glyph.orientation === "sideways" ? SIDEWAYS_ROTATION : 0,
+        });
+      }
+    } finally {
+      context.restore();
+    }
+  }
+
   hitTestObject(layout: FlowLayout, x: number, y: number): ResolvedFlowObject | undefined {
     return [...layout.objects].reverse().find((object) => {
       const left = layoutUnitToDip(object.frame.xQ26_6);
@@ -97,4 +137,3 @@ export function resizeCanvasForDisplay(canvas: HTMLCanvasElement, logicalHeight:
   const context = canvas.getContext("2d");
   context?.setTransform(ratio, 0, 0, ratio, 0, 0);
 }
-

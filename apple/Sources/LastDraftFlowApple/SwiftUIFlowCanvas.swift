@@ -11,19 +11,36 @@ public final class LastDraftFlowRenderer: LastDraftFlowViewDelegate {
         CGContext
     ) -> Void
     public typealias ImageProvider = (ResolvedFlowObject) -> UIImage?
+    public typealias GlyphPainter = (
+        CanonicalPositionedGlyph,
+        CGFloat,
+        CGContext
+    ) -> Void
 
     private let textPainter: TextPainter
+    private let glyphPainter: GlyphPainter?
     private let imageProvider: ImageProvider
     private let placementChanged: (String, NormalizedFlowPlacement) -> Void
 
     public init(
         textPainter: @escaping TextPainter,
+        glyphPainter: GlyphPainter? = nil,
         imageProvider: @escaping ImageProvider,
         placementChanged: @escaping (String, NormalizedFlowPlacement) -> Void
     ) {
         self.textPainter = textPainter
+        self.glyphPainter = glyphPainter
         self.imageProvider = imageProvider
         self.placementChanged = placementChanged
+    }
+
+    public func flowView(
+        _ view: LastDraftFlowView,
+        draw glyph: CanonicalPositionedGlyph,
+        rotationRadians: CGFloat,
+        in context: CGContext
+    ) {
+        glyphPainter?(glyph, rotationRadians, context)
     }
 
     public func flowView(
@@ -53,6 +70,7 @@ public struct LastDraftFlowCanvas: UIViewRepresentable {
     public var layout: FlowLayout
     public var contentRect: FlowRect
     public var paragraphLineHeightsQ26_6: [String: Int32]
+    public var editorGeometry: EditorGeometrySnapshotData?
     public var renderer: LastDraftFlowRenderer
     private let engine: LastDraftFlowEngine
 
@@ -61,12 +79,14 @@ public struct LastDraftFlowCanvas: UIViewRepresentable {
         layout: FlowLayout,
         contentRect: FlowRect,
         paragraphLineHeightsQ26_6: [String: Int32],
+        editorGeometry: EditorGeometrySnapshotData? = nil,
         renderer: LastDraftFlowRenderer
     ) {
         self.engine = engine
         self.layout = layout
         self.contentRect = contentRect
         self.paragraphLineHeightsQ26_6 = paragraphLineHeightsQ26_6
+        self.editorGeometry = editorGeometry
         self.renderer = renderer
     }
 
@@ -80,6 +100,7 @@ public struct LastDraftFlowCanvas: UIViewRepresentable {
         view.delegate = renderer
         view.contentRect = contentRect
         view.paragraphLineHeightsQ26_6 = paragraphLineHeightsQ26_6
+        view.editorGeometry = editorGeometry
         view.layout = layout
     }
 

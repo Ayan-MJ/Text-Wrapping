@@ -1,4 +1,8 @@
-use crate::{Insets, LayoutUnit, Normalized, Rect};
+use crate::{
+    GlyphOrientation, LayoutUnit, LogicalInsets, Normalized, ParagraphDirection, Rect,
+    TextDirection,
+    TextOrientation, WritingMode,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AnchorAffinity {
@@ -18,9 +22,9 @@ pub struct TextAnchor {
 }
 
 /// User-authored placement relative to the semantic anchor, never to document
-/// coordinates. `inline_position` maps over the object's available horizontal
+/// coordinates. `inline_position` maps over the object's available inline-axis
 /// travel: 0=start, 65,535=end. `block_offset` is signed 1/1024 line heights
-/// from the top of the anchor's reference line.
+/// from the block start of the anchor's reference line.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NormalizedPlacement {
     pub inline_position: Normalized,
@@ -47,7 +51,9 @@ impl Default for ObjectSize {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExclusionRules {
-    pub margin: Insets,
+    /// Logical, resolved to physical sides by the engine once the paragraph's
+    /// direction is known. See `LogicalInsets::resolve`.
+    pub margin: LogicalInsets,
     /// Corridors narrower than this are not used for text. When neither side
     /// reaches this width, the object enters automatic BlockFallback mode.
     pub minimum_fragment_width: LayoutUnit,
@@ -56,7 +62,7 @@ pub struct ExclusionRules {
 impl Default for ExclusionRules {
     fn default() -> Self {
         Self {
-            margin: Insets::default(),
+            margin: LogicalInsets::default(),
             minimum_fragment_width: LayoutUnit::ZERO,
         }
     }
@@ -71,11 +77,31 @@ pub struct FlowObject {
     pub exclusion: ExclusionRules,
 }
 
+/// Where a line sits inside the space available to it.
+///
+/// Logical, not physical: `Start` is the left edge of an ltr line, the right
+/// edge of an rtl one, and the top of a vertical column. The caller stores the
+/// logical value and the engine resolves it against the paragraph's own
+/// direction and writing mode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextAlignment {
+    #[default]
+    Start,
+    Center,
+    End,
+    Justify,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ParagraphStyle {
     pub line_height: LayoutUnit,
     pub ascent: LayoutUnit,
     pub space_after: LayoutUnit,
+    pub alignment: TextAlignment,
+    /// Inline-start inset, already resolved to layout units by the caller. The
+    /// engine does not know what an indent "level" is; how wide one step is
+    /// belongs to the platform adapter.
+    pub indent: LayoutUnit,
 }
 
 impl Default for ParagraphStyle {
@@ -84,6 +110,8 @@ impl Default for ParagraphStyle {
             line_height: LayoutUnit::from_raw(20 * 64),
             ascent: LayoutUnit::from_raw(15 * 64),
             space_after: LayoutUnit::ZERO,
+            alignment: TextAlignment::Start,
+            indent: LayoutUnit::ZERO,
         }
     }
 }
@@ -97,6 +125,9 @@ pub struct Cluster {
     pub advance: LayoutUnit,
     pub can_break_after: bool,
     pub is_whitespace: bool,
+    pub bidi_level: u8,
+    pub direction: TextDirection,
+    pub orientation: GlyphOrientation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,6 +135,10 @@ pub struct Paragraph {
     pub id: String,
     pub utf16_len: u32,
     pub style: ParagraphStyle,
+    pub requested_base_direction: ParagraphDirection,
+    pub base_direction: TextDirection,
+    pub writing_mode: WritingMode,
+    pub text_orientation: TextOrientation,
     pub clusters: Vec<Cluster>,
 }
 
@@ -132,6 +167,9 @@ pub struct ResolvedObject {
     /// Stable local reference used to turn pointer movement back into a
     /// normalized placement. This value is layout output and is never stored.
     pub anchor_reference_top: LayoutUnit,
+    /// Axis-neutral equivalent of `anchor_reference_top`. In ABI v4 this is
+    /// the reference line's block-start coordinate.
+    pub anchor_reference_block_start: LayoutUnit,
     pub frame: Rect,
     pub exclusion_frame: Rect,
     pub mode: ObjectLayoutMode,
@@ -149,6 +187,11 @@ pub struct FlowFragment {
 pub struct FlowLine {
     pub top: LayoutUnit,
     pub baseline: LayoutUnit,
+    pub writing_mode: WritingMode,
+    /// Physical coordinate on the line-progression (block) axis.
+    pub block_start: LayoutUnit,
+    /// Physical coordinate on the text-advance (inline) axis.
+    pub inline_start: LayoutUnit,
     pub fragments: Vec<FlowFragment>,
 }
 
@@ -157,6 +200,9 @@ pub struct ParagraphLayout {
     pub paragraph_id: String,
     pub top: LayoutUnit,
     pub bottom: LayoutUnit,
+    pub bounds: Rect,
+    pub base_direction: TextDirection,
+    pub writing_mode: WritingMode,
     pub lines: Vec<FlowLine>,
 }
 
@@ -165,4 +211,5 @@ pub struct FlowLayout {
     pub paragraphs: Vec<ParagraphLayout>,
     pub objects: Vec<ResolvedObject>,
     pub content_height: LayoutUnit,
+    pub content_width: LayoutUnit,
 }

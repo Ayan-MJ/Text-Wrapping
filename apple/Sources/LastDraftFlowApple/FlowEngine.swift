@@ -27,7 +27,7 @@ public enum LastDraftFlowEngineError: Error, Equatable, LocalizedError {
 
 /// Thin Swift owner for the shared Rust engine. It contains no layout policy.
 public struct LastDraftFlowEngine: Sendable {
-    public static let abiVersion: UInt32 = 1
+    public static let abiVersion: UInt32 = 4
 
     public init() throws {
         let actual = ld_flow_abi_version()
@@ -103,5 +103,42 @@ public struct LastDraftFlowEngine: Sendable {
         }
         return NormalizedFlowPlacement(inlineU16: inline, blockOffset1024: block)
     }
-}
 
+    public func normalizedPlacementForDragV4(
+        content: FlowRect,
+        objectWidthQ26_6: Int32,
+        objectHeightQ26_6: Int32,
+        anchorReferenceBlockStartQ26_6: Int32,
+        lineHeightQ26_6: Int32,
+        proposedXQ26_6: Int32,
+        proposedYQ26_6: Int32,
+        writingMode: FlowWritingMode
+    ) throws -> NormalizedFlowPlacement {
+        let mode: UInt32 = switch writingMode {
+        case .horizontalTb: 0
+        case .verticalRl: 1
+        case .verticalLr: 2
+        }
+        var inline: UInt16 = 0
+        var block: Int32 = 0
+        let status = ld_flow_normalized_placement_for_drag_v4(
+            content.xQ26_6,
+            content.yQ26_6,
+            content.widthQ26_6,
+            content.heightQ26_6,
+            objectWidthQ26_6,
+            objectHeightQ26_6,
+            anchorReferenceBlockStartQ26_6,
+            lineHeightQ26_6,
+            proposedXQ26_6,
+            proposedYQ26_6,
+            mode,
+            &inline,
+            &block
+        )
+        guard status == LD_FLOW_STATUS_OK else {
+            throw LastDraftFlowEngineError.abiCall(status)
+        }
+        return NormalizedFlowPlacement(inlineU16: inline, blockOffset1024: block)
+    }
+}

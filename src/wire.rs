@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    layout, AnchorAffinity, Cluster, ExclusionRules, FlowLayout, FlowObject, Insets, LayoutRequest,
-    LayoutUnit, Normalized, NormalizedPlacement, ObjectLayoutMode, ObjectSize, Paragraph,
-    ParagraphStyle, Rect, TextAnchor,
+    layout, AnchorAffinity, Cluster, ExclusionRules, FlowLayout, FlowObject, GlyphOrientation,
+    LayoutRequest, LayoutUnit, LogicalInsets, Normalized, NormalizedPlacement,
+    ObjectLayoutMode,
+    ObjectSize, Paragraph, ParagraphDirection, ParagraphStyle, Rect, TextAnchor, TextDirection,
+    TextOrientation, WritingMode,
 };
 
 #[derive(Debug, Deserialize)]
@@ -284,7 +286,13 @@ fn decode_request(input: &[u8]) -> Result<LayoutRequest, WireError> {
                     line_height: LayoutUnit::from_raw(paragraph.style.line_height_q26_6),
                     ascent: LayoutUnit::from_raw(paragraph.style.ascent_q26_6),
                     space_after: LayoutUnit::from_raw(paragraph.style.space_after_q26_6),
+                    // The v1 flow request predates paragraph alignment.
+                    ..Default::default()
                 },
+                requested_base_direction: ParagraphDirection::LeftToRight,
+                base_direction: TextDirection::LeftToRight,
+                writing_mode: WritingMode::HorizontalTb,
+                text_orientation: TextOrientation::Mixed,
                 clusters: paragraph
                     .clusters
                     .into_iter()
@@ -294,6 +302,9 @@ fn decode_request(input: &[u8]) -> Result<LayoutRequest, WireError> {
                         advance: LayoutUnit::from_raw(cluster.advance_q26_6),
                         can_break_after: cluster.can_break_after,
                         is_whitespace: cluster.is_whitespace,
+                        bidi_level: 0,
+                        direction: TextDirection::LeftToRight,
+                        orientation: GlyphOrientation::Upright,
                     })
                     .collect(),
             })
@@ -342,11 +353,13 @@ fn decode_request(input: &[u8]) -> Result<LayoutRequest, WireError> {
                     max_inline_fraction: Normalized::from_raw(object.size.max_inline_u16),
                 },
                 exclusion: ExclusionRules {
-                    margin: Insets {
-                        start: LayoutUnit::from_raw(object.exclusion.margin_start_q26_6),
-                        top: LayoutUnit::from_raw(object.exclusion.margin_top_q26_6),
-                        end: LayoutUnit::from_raw(object.exclusion.margin_end_q26_6),
-                        bottom: LayoutUnit::from_raw(object.exclusion.margin_bottom_q26_6),
+                    // The v1 flow request is horizontal-ltr only, where the
+                    // logical and physical sides coincide.
+                    margin: LogicalInsets {
+                        inline_start: LayoutUnit::from_raw(object.exclusion.margin_start_q26_6),
+                        block_start: LayoutUnit::from_raw(object.exclusion.margin_top_q26_6),
+                        inline_end: LayoutUnit::from_raw(object.exclusion.margin_end_q26_6),
+                        block_end: LayoutUnit::from_raw(object.exclusion.margin_bottom_q26_6),
                     },
                     minimum_fragment_width: LayoutUnit::from_raw(
                         object.exclusion.minimum_fragment_width_q26_6,

@@ -1,0 +1,126 @@
+{
+  "version": 2,
+  "content": {
+    "xQ26_6": 0,
+    "yQ26_6": 0,
+    "widthQ26_6": 11520,
+    "heightQ26_6": 20480
+  },
+  "paragraphs": [
+    {
+      "paragraph": {
+        "id": "vertical-rl",
+        "text": "日本語ABC、縦書きテスト。",
+        "baseDirection": "leftToRight",
+        "writingMode": "verticalRl",
+        "textOrientation": "mixed",
+        "runs": [
+          {
+            "utf16Start": 0,
+            "utf16End": 14,
+            "style": {
+              "fontId": "fixture-noto-jp",
+              "fontSizeQ26_6": 1152,
+              "language": "ja",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 269488383,
+              "underline": false,
+              "strikethrough": false
+            }
+          }
+        ]
+      },
+      "style": {
+        "lineHeightQ26_6": 1536,
+        "ascentQ26_6": 1152,
+        "spaceAfterQ26_6": 0
+      }
+    },
+    {
+      "paragraph": {
+        "id": "vertical-lr",
+        "text": "日本語ABC、縦書きテスト。",
+        "baseDirection": "leftToRight",
+        "writingMode": "verticalLr",
+        "textOrientation": "mixed",
+        "runs": [
+          {
+            "utf16Start": 0,
+            "utf16End": 14,
+            "style": {
+              "fontId": "fixture-noto-jp",
+              "fontSizeQ26_6": 1152,
+              "language": "ja",
+              "features": [],
+              "variations": [],
+              "fillRGBA": 269488383,
+              "underline": false,
+              "strikethrough": false
+            }
+          }
+        ]
+      },
+      "style": {
+        "lineHeightQ26_6": 1536,
+        "ascentQ26_6": 1152,
+        "spaceAfterQ26_6": 0
+      }
+    }
+  ],
+  "objects": [
+    {
+      "id": "vertical-rl-picture",
+      "anchor": {
+        "paragraphId": "vertical-rl",
+        "utf16Offset": 0,
+        "affinity": "downstream"
+      },
+      "placement": {
+        "inlineU16": 32768,
+        "blockOffset1024": 0
+      },
+      "size": {
+        "idealWidthQ26_6": 4480,
+        "idealHeightQ26_6": 7040,
+        "maxInlineU16": 65535
+      },
+      "exclusion": {
+        "shape": "bounds",
+        "marginStartQ26_6": 384,
+        "marginBeforeQ26_6": 384,
+        "marginEndQ26_6": 384,
+        "marginAfterQ26_6": 384,
+        "minimumFragmentWidthQ26_6": 2304
+      },
+      "responsivePolicy": "scale-then-centered-block-v1"
+    },
+    {
+      "id": "vertical-lr-picture",
+      "anchor": {
+        "paragraphId": "vertical-lr",
+        "utf16Offset": 0,
+        "affinity": "downstream"
+      },
+      "placement": {
+        "inlineU16": 32768,
+        "blockOffset1024": 0
+      },
+      "size": {
+        "idealWidthQ26_6": 4480,
+        "idealHeightQ26_6": 7040,
+        "maxInlineU16": 65535
+      },
+      "exclusion": {
+        "shape": "bounds",
+        "marginStartQ26_6": 384,
+        "marginBeforeQ26_6": 384,
+        "marginEndQ26_6": 384,
+        "marginAfterQ26_6": 384,
+        "minimumFragmentWidthQ26_6": 2304
+      },
+      "responsivePolicy": "scale-then-centered-block-v1"
+    }
+  ],
+  "caretWidthQ26_6": 64
+}

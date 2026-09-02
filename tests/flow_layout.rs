@@ -1,7 +1,8 @@
 use lastdraft_flow::{
     layout, normalized_placement_for_drag, AnchorAffinity, Cluster, ExclusionRules, FlowObject,
-    Insets, LayoutRequest, LayoutUnit, Normalized, NormalizedPlacement, ObjectLayoutMode,
-    ObjectSize, Paragraph, ParagraphStyle, Rect, TextAnchor, BLOCK_OFFSET_SCALE,
+    GlyphOrientation, LayoutRequest, LayoutUnit, LogicalInsets, Normalized, NormalizedPlacement,
+    ObjectLayoutMode, ObjectSize, Paragraph, ParagraphDirection, ParagraphStyle, Rect, TextAnchor,
+    TextDirection, TextOrientation, WritingMode, BLOCK_OFFSET_SCALE,
 };
 
 fn u(value: i32) -> LayoutUnit {
@@ -16,7 +17,12 @@ fn paragraph(id: u64, cluster_count: u32) -> Paragraph {
             line_height: u(10),
             ascent: u(8),
             space_after: LayoutUnit::ZERO,
+            ..Default::default()
         },
+        requested_base_direction: ParagraphDirection::LeftToRight,
+        base_direction: TextDirection::LeftToRight,
+        writing_mode: WritingMode::HorizontalTb,
+        text_orientation: TextOrientation::Mixed,
         clusters: (0..cluster_count)
             .map(|offset| Cluster {
                 utf16_start: offset,
@@ -24,6 +30,9 @@ fn paragraph(id: u64, cluster_count: u32) -> Paragraph {
                 advance: u(10),
                 can_break_after: true,
                 is_whitespace: false,
+                bidi_level: 0,
+                direction: TextDirection::LeftToRight,
+                orientation: GlyphOrientation::Upright,
             })
             .collect(),
     }
@@ -55,7 +64,7 @@ fn image(
             max_inline_fraction: Normalized::END,
         },
         exclusion: ExclusionRules {
-            margin: Insets::default(),
+            margin: LogicalInsets::default(),
             minimum_fragment_width: u(minimum_fragment_width),
         },
     }

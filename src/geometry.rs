@@ -1,4 +1,4 @@
-use crate::LayoutUnit;
+use crate::{LayoutUnit, TextDirection, WritingMode};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rect {
@@ -52,6 +52,65 @@ pub struct Insets {
     pub top: LayoutUnit,
     pub end: LayoutUnit,
     pub bottom: LayoutUnit,
+}
+
+/// Exclusion margins as the DOCUMENT stores them: along the inline axis (the
+/// one the words run along) and the block axis (the one lines advance along).
+///
+/// These live logically because the physical side each one lands on depends on
+/// the paragraph's resolved direction and writing mode, and the resolved
+/// direction is not known until the engine has run the bidi algorithm. That is
+/// exactly why this resolution cannot sit in a platform adapter: with
+/// `baseDirection: auto` — the default for a letter — the adapter does not yet
+/// know whether the paragraph is ltr or rtl.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LogicalInsets {
+    pub inline_start: LayoutUnit,
+    pub block_start: LayoutUnit,
+    pub inline_end: LayoutUnit,
+    pub block_end: LayoutUnit,
+}
+
+impl LogicalInsets {
+    pub const fn uniform(value: LayoutUnit) -> Self {
+        Self {
+            inline_start: value,
+            block_start: value,
+            inline_end: value,
+            block_end: value,
+        }
+    }
+
+    /// Map the four logical sides onto the four physical ones.
+    ///
+    /// In horizontal-ltr the two coincide, which is why a mapping that ignored
+    /// direction looked correct for so long.
+    pub fn resolve(self, writing_mode: WritingMode, base_direction: TextDirection) -> Insets {
+        let rtl = base_direction == TextDirection::RightToLeft;
+        match writing_mode {
+            // Inline runs across, block runs down.
+            WritingMode::HorizontalTb => Insets {
+                start: if rtl { self.inline_end } else { self.inline_start },
+                end: if rtl { self.inline_start } else { self.inline_end },
+                top: self.block_start,
+                bottom: self.block_end,
+            },
+            // Inline runs down the column, block runs LEFT from the right edge.
+            WritingMode::VerticalRl => Insets {
+                top: if rtl { self.inline_end } else { self.inline_start },
+                bottom: if rtl { self.inline_start } else { self.inline_end },
+                end: self.block_start,
+                start: self.block_end,
+            },
+            // Inline runs down the column, block runs right from the left edge.
+            WritingMode::VerticalLr => Insets {
+                top: if rtl { self.inline_end } else { self.inline_start },
+                bottom: if rtl { self.inline_start } else { self.inline_end },
+                start: self.block_start,
+                end: self.block_end,
+            },
+        }
+    }
 }
 
 impl Insets {
