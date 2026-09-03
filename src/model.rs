@@ -75,6 +75,20 @@ pub struct FlowObject {
     pub placement: NormalizedPlacement,
     pub size: ObjectSize,
     pub exclusion: ExclusionRules,
+    pub flow: ObjectFlow,
+}
+
+/// Whether the words go AROUND an object or UNDER it.
+///
+/// The engine owns this so every client inherits one interpretation instead of
+/// writing its own. Ink and text boxes are always `Float`; a picture is the
+/// author's choice, and `Wrap` is the default because it is what every picture
+/// written before this existed already is.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ObjectFlow {
+    #[default]
+    Wrap,
+    Float,
 }
 
 /// Where a line sits inside the space available to it.
@@ -158,6 +172,11 @@ pub enum ObjectLayoutMode {
     /// object is centered for this layout, and its vertical band blocks the
     /// full content width so text resumes below it.
     BlockFallback,
+    /// The object sits OVER the words and excludes nothing. Its frame is
+    /// resolved exactly as `UserPositioned`, and the responsive fallback never
+    /// applies: a floating object is not competing with text for room, so
+    /// there is nothing to scale down for.
+    Floating,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

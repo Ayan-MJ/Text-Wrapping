@@ -16,7 +16,14 @@ use crate::{
 // inside the engine. That resolution cannot live in a platform adapter: with
 // `baseDirection: auto` the adapter does not yet know whether a paragraph is
 // ltr or rtl, because the engine is what runs the bidi algorithm.
-pub const ABI_VERSION: u32 = 6;
+// v7 lets a request name which snapshot sections to serialize. Absent means all
+// of them, so a v6 request is unchanged -- but a request that DOES name them is
+// refused by a v6 engine rather than silently handed 21 MiB it did not want.
+// v8 lets an object say whether the words go AROUND it or UNDER it. Absent
+// means `wrap`, so a v7 request is unchanged -- but a request naming `float` is
+// refused by a v7 engine rather than laid out as a wrapped object, which would
+// reflow the letter around ink an author drew over it.
+pub const ABI_VERSION: u32 = 8;
 
 #[repr(C)]
 pub struct LDFlowBuffer {
@@ -186,8 +193,8 @@ pub unsafe extern "C" fn ld_flow_editor_snapshot_create_json(
     let shaper = unsafe { &*shaper };
     let input = unsafe { std::slice::from_raw_parts(input, input_len) };
     match editor_snapshot_from_json(shaper, input) {
-        Ok(inner) => {
-            let response = editor_snapshot_json(Ok(&inner));
+        Ok((inner, sections)) => {
+            let response = editor_snapshot_json(Ok((&inner, sections)));
             let handle = Box::into_raw(Box::new(LDFlowEditorSnapshot { inner }));
             unsafe { snapshot.write(handle) };
             write_output(response, output)

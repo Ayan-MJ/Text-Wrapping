@@ -1,4 +1,5 @@
 use core::fmt;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -67,9 +68,20 @@ struct ItemCharacter {
     tate_chu_yoko: bool,
 }
 
+/// Shaping is by far the most expensive part of laying a letter out, and a
+/// keystroke changes exactly one paragraph. Every other paragraph in the letter
+/// is shaped again from scratch for no reason, so the shaper remembers what it
+/// has already shaped.
+///
+/// The key is the paragraph itself -- its text and every style that steers
+/// shaping -- so a paragraph the author has not touched hits, and one they have
+/// misses by construction. There is no invalidation to get wrong.
+const SHAPE_CACHE_LIMIT: usize = 512;
+
 #[derive(Default)]
 pub struct CanonicalShaper {
     fonts: HashMap<String, RegisteredFont>,
+    shaped: RefCell<HashMap<RichParagraph, ShapedParagraph>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,6 +124,10 @@ pub struct ShapedCluster {
     pub bidi_level: u8,
     pub direction: TextDirection,
     pub orientation: GlyphOrientation,
+    /// A tate-chu-yoko group: digits packed SIDE BY SIDE inside one em cell.
+    /// Internal, and deliberately not on any wire — it changes how a caret is
+    /// drawn inside the cell, which is geometry the engine already owns.
+    pub tate_chu_yoko: bool,
     pub caret_stops: Vec<ClusterCaretStop>,
 }
 
@@ -243,7 +259,37 @@ impl CanonicalShaper {
         self.fonts.get(id).map(|font| &font.descriptor)
     }
 
+    /// Shape a paragraph, reusing the last result for one that has not changed.
+    ///
+    /// A keystroke edits one paragraph; without this every other paragraph in
+    /// the letter is shaped again for nothing, which is the single largest cost
+    /// in laying out a long letter. Cloning a shaped paragraph is a memcpy of
+    /// its clusters and glyphs -- far cheaper than shaping it again.
     pub fn shape_paragraph(
+        &self,
+        paragraph: &RichParagraph,
+    ) -> Result<ShapedParagraph, ShapingError> {
+        if let Some(hit) = self.shaped.borrow().get(paragraph) {
+            return Ok(hit.clone());
+        }
+        let shaped = self.shape_paragraph_uncached(paragraph)?;
+        let mut cache = self.shaped.borrow_mut();
+        // A font's bytes can never change under an id -- register_font refuses a
+        // conflicting one -- so an entry can never go stale. The only bound
+        // needed is on size.
+        if cache.len() >= SHAPE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(paragraph.clone(), shaped.clone());
+        Ok(shaped)
+    }
+
+    /// How many paragraphs the shaper is currently remembering.
+    pub fn shape_cache_len(&self) -> usize {
+        self.shaped.borrow().len()
+    }
+
+    fn shape_paragraph_uncached(
         &self,
         paragraph: &RichParagraph,
     ) -> Result<ShapedParagraph, ShapingError> {
@@ -372,7 +418,20 @@ impl CanonicalShaper {
                 })
                 .collect();
             if item.key.tate_chu_yoko {
-                pack_tate_chu_yoko(&mut glyphs, run.style.font_size, item.utf16_start);
+                // A vertical upright glyph carries a y_offset from the font that
+                // drops its baseline into the em cell -- the same value for every
+                // glyph, because it is the face's vertical origin. A packed group
+                // has to sit on that same line or it renders a whole cell high,
+                // overlapping the character before it. Ask the font rather than
+                // assume a number.
+                let upright_y_offset =
+                    upright_vertical_y_offset(&face, run_text, run.style.font_size, &font.descriptor);
+                pack_tate_chu_yoko(
+                    &mut glyphs,
+                    run.style.font_size,
+                    item.utf16_start,
+                    upright_y_offset,
+                );
             }
             let uses_vertical_metrics = paragraph.writing_mode.is_vertical()
                 && item.key.orientation == GlyphOrientation::Upright;
@@ -429,6 +488,7 @@ impl CanonicalShaper {
                     bidi_level: item.key.bidi_level,
                     direction: text_direction_from_level(item.key.bidi_level),
                     orientation: item.key.orientation,
+                    tate_chu_yoko: item.key.tate_chu_yoko,
                     caret_stops: caret_stops(
                         cluster_text,
                         start,
@@ -700,7 +760,42 @@ fn scale_font_unit(value: i32, font_size: LayoutUnit, units_per_em: u16) -> Layo
 /// wider than the cell. They are then pinned to the cell's two edges and their
 /// advances tighten by that few percent — which is what tate-chu-yoko looks
 /// like anyway. Glyph ink is narrower than its advance, so they do not collide.
-fn pack_tate_chu_yoko(glyphs: &mut [ShapedGlyph], em: LayoutUnit, group_start: u32) {
+/// The y_offset this face gives an upright glyph in vertical writing.
+///
+/// It is a property of the face, not of the character, so shaping the group's
+/// own text vertically is enough to learn it, and it stays correct for a font
+/// whose vertical origin differs from the usual 0.88 em.
+fn upright_vertical_y_offset(
+    face: &Face<'_>,
+    text: &str,
+    font_size: LayoutUnit,
+    descriptor: &FontDescriptor,
+) -> LayoutUnit {
+    let mut buffer = UnicodeBuffer::new();
+    for (index, character) in text.chars().enumerate() {
+        buffer.add(character, index as u32);
+    }
+    buffer.set_direction(Direction::TopToBottom);
+    buffer.guess_segment_properties();
+    let features = [
+        Feature::new(Tag::from_bytes(b"vert"), 1, ..),
+        Feature::new(Tag::from_bytes(b"vrt2"), 1, ..),
+    ];
+    let shaped = rustybuzz::shape(face, &features, buffer);
+    let offset = shaped
+        .glyph_positions()
+        .first()
+        .map(|position| position.y_offset)
+        .unwrap_or(0);
+    scale_font_unit(offset, font_size, descriptor.units_per_em)
+}
+
+fn pack_tate_chu_yoko(
+    glyphs: &mut [ShapedGlyph],
+    em: LayoutUnit,
+    group_start: u32,
+    y_offset: LayoutUnit,
+) {
     let count = glyphs.len();
     if count == 0 {
         return;
@@ -731,11 +826,16 @@ fn pack_tate_chu_yoko(glyphs: &mut [ShapedGlyph], em: LayoutUnit, group_start: u
         }
     }
 
+    // An upright vertical glyph carries an x_offset of -em/2 from the font, so
+    // that it CENTRES on the baseline rather than starting at it. The cell
+    // therefore spans [-em/2, +em/2] about the baseline, and a group packed
+    // from zero would sit half an em to the right of its own column.
+    let cell_origin = LayoutUnit::from_raw(-em.raw() / 2);
     for (index, glyph) in glyphs.iter_mut().enumerate() {
         // Every glyph answers to the group's single cluster.
         glyph.cluster_utf16 = group_start;
-        glyph.x_offset = positions[index];
-        glyph.y_offset = LayoutUnit::ZERO;
+        glyph.x_offset = cell_origin + positions[index];
+        glyph.y_offset = y_offset;
         glyph.x_advance = LayoutUnit::ZERO;
         glyph.y_advance = if index + 1 == count {
             LayoutUnit::from_raw(-em.raw())
@@ -1046,8 +1146,9 @@ mod tests {
 
         let run = &shaped.runs[0];
         assert_eq!(run.glyphs.len(), 1);
-        // Centred, so it starts inside the cell rather than at its edge.
-        assert!(run.glyphs[0].x_offset > LayoutUnit::ZERO);
+        // Centred in a cell that straddles the baseline, so a single narrow
+        // digit starts left of it, like a full-width glyph does.
+        assert!(run.glyphs[0].x_offset < LayoutUnit::ZERO);
     }
 
     #[test]
@@ -1076,10 +1177,21 @@ mod tests {
         // Spread across the column, not stacked down it.
         assert!(group[1].x_offset > group[0].x_offset);
         assert_eq!(group[0].y_advance, LayoutUnit::ZERO);
+        // The pair sits on the face's own vertical origin, so it shares a
+        // baseline with the upright characters around it.
+        let upright = shaped
+            .runs
+            .iter()
+            .flat_map(|run| &run.glyphs)
+            .find(|glyph| glyph.cluster_utf16 == 2)
+            .expect("the kanji after the group");
+        assert_eq!(group[0].y_offset, upright.y_offset);
+        assert!(group[0].y_offset < LayoutUnit::ZERO);
         // The pair advances exactly one em, and no further.
         assert_eq!(group[1].y_advance, LayoutUnit::from_raw(-em.raw()));
-        // Both stay inside the cell.
-        assert!(group[0].x_offset >= LayoutUnit::ZERO);
-        assert!(group[1].x_offset <= em);
+        // Both stay inside the cell, which is centred on the baseline.
+        let half = LayoutUnit::from_raw(em.raw() / 2);
+        assert!(group[0].x_offset >= LayoutUnit::from_raw(-half.raw()));
+        assert!(group[1].x_offset <= half);
     }
 }

@@ -1,4 +1,5 @@
 use lastdraft_flow::{
+    ObjectFlow, ObjectLayoutMode,
     layout, AnchorAffinity, CanonicalShaper, CaretMovementDirection, EditorGeometrySnapshot,
     EditorTextPosition, ExclusionRules, FlowObject, GlyphOrientation, LayoutRequest, LogicalInsets,
     LayoutUnit, Normalized, NormalizedPlacement, ObjectSize, ParagraphDirection, ParagraphStyle,
@@ -199,6 +200,7 @@ fn rtl_exclusion_fragments_start_at_the_right_and_selection_crosses_both_sides()
     let content = Rect::new(LayoutUnit::ZERO, LayoutUnit::ZERO, q(520 * 64), q(500 * 64));
     let object = FlowObject {
         id: "picture".into(),
+        flow: ObjectFlow::Wrap,
         anchor: TextAnchor {
             paragraph_id: shaped.id.clone(),
             utf16_offset: 0,
@@ -277,6 +279,7 @@ fn vertical_rl_and_lr_use_vertical_metrics_orientation_and_image_exclusions() {
         let content = Rect::new(LayoutUnit::ZERO, LayoutUnit::ZERO, q(180 * 64), q(320 * 64));
         let object = FlowObject {
             id: format!("picture-{mode:?}"),
+            flow: ObjectFlow::Wrap,
             anchor: TextAnchor {
                 paragraph_id: shaped.id.clone(),
                 utf16_offset: 0,
@@ -583,41 +586,42 @@ fn vertical_block_movement_crosses_columns_and_reaches_the_next_paragraph() {
 }
 
 #[test]
-fn inline_movement_stops_at_a_line_end_in_both_writing_modes() {
-    // KNOWN LIMITATION, and it is NOT vertical-specific: `move_caret` confines
-    // inline motion to the current line, so at a wrapped line's end the caret
-    // stays put instead of continuing into the next line. A real editor
-    // continues. This test exists to prove vertical behaves exactly as
-    // horizontal does, so the gap is one shared behaviour to fix rather than a
-    // vertical defect — the browser input host (Slice 5) is what owns it.
+fn inline_movement_carries_on_past_a_wrapped_line_end() {
+    // This used to be a defect pin. `move_caret` confined inline motion to the
+    // current line, so at a wrapped line's end the caret simply stopped and the
+    // key did nothing -- in BOTH writing modes, which is why the horizontal half
+    // is here too. It now walks on, and the assertions are the correct ones.
     let horizontal = horizontal_pair();
     let start = horizontal.caret_stops.first().unwrap().position.clone();
-    let visited = walk(&horizontal, &start, CaretMovementDirection::Right, 200);
-    let first_line = horizontal
+    let visited = walk(&horizontal, &start, CaretMovementDirection::Right, 400);
+    let reached = horizontal
         .caret_stops
         .iter()
         .find(|stop| stop.position == *visited.last().unwrap())
         .map(|stop| stop.document_line_index)
         .unwrap();
-    assert_eq!(first_line, 0, "horizontal inline motion stayed on line 0");
-    assert!(
-        horizontal
-            .caret_stops
-            .iter()
-            .any(|stop| stop.document_line_index > 0),
-        "the horizontal fixture really does wrap"
-    );
+    let lines = horizontal
+        .caret_stops
+        .iter()
+        .map(|stop| stop.document_line_index)
+        .max()
+        .unwrap();
+    assert!(lines > 0, "the horizontal fixture really does wrap");
+    assert_eq!(reached, lines, "the caret should reach the last line");
 
+    // Vertical: Down is the inline axis, and it must leave its column too.
     let (vertical, _, _) = vertical_pair();
     let start = vertical.caret_stops.first().unwrap().position.clone();
-    let visited = walk(&vertical, &start, CaretMovementDirection::Down, 200);
+    let visited = walk(&vertical, &start, CaretMovementDirection::Down, 400);
     let line = vertical
         .caret_stops
         .iter()
         .find(|stop| stop.position == *visited.last().unwrap())
         .map(|stop| stop.document_line_index)
         .unwrap();
-    assert_eq!(line, 0, "vertical inline motion stops the same way");
+    assert!(line > 0, "the caret should have left its first column");
+    // And it crosses into the second paragraph, which is the whole letter.
+    assert_eq!(visited.last().unwrap().paragraph_id, "v-two");
 }
 
 #[test]
@@ -723,6 +727,41 @@ fn a_vertical_selection_rect_runs_down_its_column_not_across_the_page() {
 // Both are LOGICAL in Scribe and physical in the engine's geometry, so both
 // have to be checked in each writing mode rather than only in horizontal-ltr,
 // where the two happen to coincide.
+/// The same as `aligned`, but hands back the shaped paragraph too, so a test
+/// can ask where the individual clusters landed rather than only the lines.
+fn aligned_snapshot(
+    text: &str,
+    mode: WritingMode,
+    base: ParagraphDirection,
+    alignment: TextAlignment,
+) -> (lastdraft_flow::FlowLayout, lastdraft_flow::ShapedParagraph, Rect) {
+    let shaper = shaper();
+    let font = if mode == WritingMode::HorizontalTb { "latin" } else { "jp" };
+    let language = if font == "latin" { "en" } else { "ja" };
+    let shaped = shaper
+        .shape_paragraph(&paragraph(
+            "aligned",
+            &[(text, font, language)],
+            base,
+            mode,
+            TextOrientation::Mixed,
+        ))
+        .unwrap();
+    let content = Rect::new(LayoutUnit::ZERO, LayoutUnit::ZERO, q(400 * 64), q(400 * 64));
+    let style = ParagraphStyle {
+        alignment,
+        indent: LayoutUnit::ZERO,
+        ..paragraph_style()
+    };
+    let flow = layout(&LayoutRequest {
+        content,
+        paragraphs: vec![shaped.to_flow_paragraph(style)],
+        objects: Vec::new(),
+    })
+    .unwrap();
+    (flow, shaped, content)
+}
+
 fn aligned(
     text: &str,
     mode: WritingMode,
@@ -898,17 +937,13 @@ fn a_vertical_indent_starts_the_column_lower_not_further_left() {
 }
 
 #[test]
-fn justify_is_not_implemented_and_currently_sets_flush_at_the_start() {
-    // KNOWN GAP. Contract §3 lists `justify` among the alignments Scribe owns.
-    // Stretching a line needs slack distributed between its clusters, which is
-    // glyph-positioning work in the snapshot rather than interval arithmetic in
-    // layout(), so it is not built. Until it is, a justified paragraph is set
-    // flush at its start edge -- the same as `Start`.
-    //
-    // This asserts the CURRENT behaviour on purpose so the gap cannot be
-    // mistaken for finished. Flip it when justification lands.
+fn justify_fills_every_line_but_the_last() {
+    // Contract §3 lists `justify` among the alignments Scribe owns. A justified
+    // line is stretched to fill the space it was given; the LAST line of a
+    // paragraph is not, which is universal typographic behaviour and the thing
+    // a broken justifier gets wrong.
     let text = "The quick brown fox jumps over the lazy dog and keeps running";
-    let (justified, _) = aligned(
+    let (justified, content) = aligned(
         text, WritingMode::HorizontalTb, ParagraphDirection::LeftToRight,
         TextAlignment::Justify, LayoutUnit::ZERO,
     );
@@ -919,10 +954,144 @@ fn justify_is_not_implemented_and_currently_sets_flush_at_the_start() {
     let j = &justified.paragraphs[0].lines;
     let s = &start.paragraphs[0].lines;
     assert!(j.len() > 1, "the fixture must actually wrap");
-    assert_eq!(j.len(), s.len());
-    for (left, right) in j.iter().zip(s.iter()) {
-        assert_eq!(left.fragments[0].rect, right.fragments[0].rect);
+    assert_eq!(j.len(), s.len(), "justification must not change where lines break");
+
+    let last = j.len() - 1;
+    for (index, line) in j.iter().enumerate() {
+        let fragment = line.fragments[0].rect;
+        assert_eq!(fragment.x, content.x, "every line starts at the same edge");
+        if index == last {
+            assert_eq!(
+                fragment, s[index].fragments[0].rect,
+                "the last line is NOT stretched",
+            );
+        } else {
+            assert_eq!(
+                fragment.x + fragment.width,
+                content.x + content.width,
+                "line {index} must reach the far edge",
+            );
+            assert!(
+                fragment.width > s[index].fragments[0].rect.width,
+                "line {index} must be wider than the same line set flush",
+            );
+        }
     }
+}
+
+#[test]
+fn justification_puts_its_slack_between_the_words() {
+    // The stretch belongs at the spaces. Stretching between letters instead is
+    // what makes justified text look broken, so it is the fallback and not the
+    // rule -- and the clusters must add up to the line EXACTLY, or the last
+    // word lands a rounding error short of the edge.
+    let text = "The quick brown fox jumps over the lazy dog and keeps running";
+    let (layout, shaped, content) = aligned_snapshot(
+        text, WritingMode::HorizontalTb, ParagraphDirection::LeftToRight,
+        TextAlignment::Justify,
+    );
+    let snapshot = EditorGeometrySnapshot::new(
+        layout.clone(), vec![shaped.clone()], content, q(2),
+    ).expect("a snapshot");
+
+    let first: Vec<_> = snapshot
+        .clusters
+        .iter()
+        .filter(|cluster| cluster.line_index == 0)
+        .collect();
+    assert!(first.len() > 2, "the first line must have words on it");
+
+    // The reported boxes tile the line with no gap and no overlap, so a
+    // selection dragged across a stretched space covers it.
+    for pair in first.windows(2) {
+        assert_eq!(
+            pair[0].rect.x + pair[0].rect.width,
+            pair[1].rect.x,
+            "cluster boxes must stay contiguous",
+        );
+    }
+    let last = first.last().unwrap().rect;
+    assert_eq!(
+        last.x + last.width,
+        content.x + content.width,
+        "the line must add up to the far edge exactly",
+    );
+
+    // The widened clusters are the spaces, not the letters.
+    let widened: Vec<usize> = first
+        .iter()
+        .enumerate()
+        .filter(|(_, cluster)| {
+            let natural = shaped
+                .clusters
+                .iter()
+                .find(|candidate| candidate.utf16_start == cluster.utf16_start)
+                .map(|candidate| candidate.advance)
+                .unwrap();
+            cluster.rect.width > natural
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert!(!widened.is_empty(), "something must have been stretched");
+    for index in widened {
+        let cluster = first[index];
+        let natural = shaped
+            .clusters
+            .iter()
+            .find(|candidate| candidate.utf16_start == cluster.utf16_start)
+            .unwrap();
+        assert!(
+            natural.is_whitespace,
+            "a line with spaces must be stretched at its spaces, not its letters",
+        );
+    }
+}
+
+#[test]
+fn justification_stretches_between_characters_when_there_are_no_spaces() {
+    // A line of Japanese has no spaces to stretch, and stretching between the
+    // characters is exactly how CJK justification works.
+    let text = "\u{3042}\u{3044}\u{3046}\u{3048}\u{304a}\u{304b}\u{304d}\u{304f}\u{3051}\u{3053}";
+    let (layout, shaped, content) = aligned_snapshot(
+        text, WritingMode::HorizontalTb, ParagraphDirection::LeftToRight,
+        TextAlignment::Justify,
+    );
+    let snapshot = EditorGeometrySnapshot::new(
+        layout.clone(), vec![shaped], content, q(2),
+    ).expect("a snapshot");
+    let first: Vec<_> = snapshot
+        .clusters
+        .iter()
+        .filter(|cluster| cluster.line_index == 0)
+        .collect();
+    if layout.paragraphs[0].lines.len() < 2 {
+        return; // Nothing wrapped, so nothing is justified. Not a failure.
+    }
+    for pair in first.windows(2) {
+        assert_eq!(pair[0].rect.x + pair[0].rect.width, pair[1].rect.x);
+    }
+    let last = first.last().unwrap().rect;
+    assert_eq!(last.x + last.width, content.x + content.width);
+}
+
+#[test]
+fn justify_fills_the_column_in_vertical_writing() {
+    // The inline axis runs DOWN the column, so a justified vertical line is
+    // stretched along y and its column does not move sideways.
+    let text = "The quick brown fox jumps over the lazy dog and keeps running";
+    let (justified, content) = aligned(
+        text, WritingMode::VerticalRl, ParagraphDirection::LeftToRight,
+        TextAlignment::Justify, LayoutUnit::ZERO,
+    );
+    let lines = &justified.paragraphs[0].lines;
+    assert!(lines.len() > 1, "the fixture must actually wrap");
+    let first = lines[0].fragments[0].rect;
+    assert_eq!(first.y, content.y);
+    assert_eq!(
+        first.y + first.height,
+        content.y + content.height,
+        "a justified vertical line fills its column",
+    );
 }
 
 // Exclusion margins are LOGICAL in the document and physical in the geometry.
@@ -1001,6 +1170,7 @@ fn an_rtl_paragraph_excludes_on_the_mirrored_side() {
         let content = Rect::new(LayoutUnit::ZERO, LayoutUnit::ZERO, q(300 * 64), q(300 * 64));
         let object = FlowObject {
             id: "picture".into(),
+            flow: ObjectFlow::Wrap,
             anchor: TextAnchor {
                 paragraph_id: shaped.id.clone(),
                 utf16_offset: 0,
@@ -1042,4 +1212,202 @@ fn an_rtl_paragraph_excludes_on_the_mirrored_side() {
     // And the block margins are untouched by direction.
     assert_eq!(ltr.y, rtl.y);
     assert_eq!(ltr.height, rtl.height);
+}
+
+#[test]
+fn a_caret_inside_a_digit_pair_stands_between_the_digits() {
+    // A caret lies ACROSS the axis the words run along, so in a vertical column
+    // it is a horizontal bar. A tate-chu-yoko group is the exception: its
+    // digits are packed side by side across the column, so a caret BETWEEN them
+    // must be a vertical bar between the digits. Drawn the usual way it was a
+    // horizontal line halfway down the cell, cutting through both and pointing
+    // at neither.
+    let shaper = shaper();
+    let shaped = shaper
+        .shape_paragraph(&paragraph(
+            "tcy-caret",
+            &[("12\u{6642}", "jp", "ja")],
+            ParagraphDirection::LeftToRight,
+            WritingMode::VerticalRl,
+            TextOrientation::Mixed,
+        ))
+        .unwrap();
+    let content = Rect::new(LayoutUnit::ZERO, LayoutUnit::ZERO, q(200 * 64), q(200 * 64));
+    let flow = layout(&LayoutRequest {
+        content,
+        paragraphs: vec![shaped.to_flow_paragraph(paragraph_style())],
+        objects: Vec::new(),
+    })
+    .unwrap();
+    let snapshot = EditorGeometrySnapshot::new(flow, vec![shaped], content, q(64)).unwrap();
+
+    let at = |offset: u32| {
+        snapshot
+            .caret_stops
+            .iter()
+            .find(|stop| stop.position.utf16_offset == offset)
+            .map(|stop| stop.rect)
+            .expect("a caret stop")
+    };
+
+    // Offsets 0 and 2 are the group's own edges -- ordinary boundaries with the
+    // characters above and below -- so they stay horizontal bars.
+    for edge in [at(0), at(2)] {
+        assert!(edge.width > edge.height, "an edge caret lies across the column");
+    }
+
+    // Offset 1 sits BETWEEN the two digits, so it stands upright.
+    let between = at(1);
+    assert!(
+        between.height > between.width,
+        "a caret between two packed digits stands between them"
+    );
+    // And it sits inside the cell, part way across it rather than at an edge.
+    let edge = at(0);
+    assert!(between.x > edge.x);
+    assert!(between.x < edge.x + edge.width);
+    // It spans the cell it divides, so it is visible against both digits.
+    assert_eq!(between.height, edge.height.max(between.height));
+}
+
+/// Amendment 2: a floating object sits OVER the words and changes nothing
+/// about them. Ink and text boxes are always floating; a picture chooses.
+///
+/// The strongest form of the claim is that the SAME request laid out twice,
+/// differing only in `flow`, produces byte-identical line geometry when the
+/// object floats — so this asserts against the letter with no object at all,
+/// which is what "changes nothing" has to mean.
+#[test]
+fn a_floating_object_does_not_move_a_single_line() {
+    for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl] {
+        let shaped = shaper()
+            .shape_paragraph(&paragraph(
+            "wrapping",
+            &[(
+                "A photograph sits beside these words and the paragraph runs on \
+                 for long enough to wrap several times over.",
+                "latin",
+                "en",
+            )],
+            ParagraphDirection::LeftToRight,
+            mode,
+            TextOrientation::Mixed,
+        ))
+        .unwrap();
+        let content = Rect::new(LayoutUnit::ZERO, LayoutUnit::ZERO, q(320 * 64), q(320 * 64));
+        let object = |flow| FlowObject {
+            id: "picture".into(),
+            flow,
+            anchor: TextAnchor {
+                paragraph_id: shaped.id.clone(),
+                utf16_offset: 0,
+                affinity: AnchorAffinity::Downstream,
+            },
+            placement: NormalizedPlacement {
+                inline_position: Normalized::CENTER,
+                block_offset: 0,
+            },
+            size: ObjectSize {
+                ideal_width: q(140 * 64),
+                ideal_height: q(100 * 64),
+                max_inline_fraction: Normalized::END,
+            },
+            exclusion: ExclusionRules {
+                margin: LogicalInsets::uniform(q(8 * 64)),
+                minimum_fragment_width: q(40 * 64),
+            },
+        };
+        let run = |objects| {
+            layout(&LayoutRequest {
+                content,
+                paragraphs: vec![shaped.to_flow_paragraph(paragraph_style())],
+                objects,
+            })
+            .unwrap()
+        };
+
+        let bare = run(vec![]);
+        let floating = run(vec![object(ObjectFlow::Float)]);
+        let wrapped = run(vec![object(ObjectFlow::Wrap)]);
+
+        // A floating object leaves the words exactly as they were with no
+        // object present at all.
+        assert_eq!(
+            bare.paragraphs[0].lines, floating.paragraphs[0].lines,
+            "{mode:?}: a floating object must not move a line"
+        );
+        // And the same object, wrapped, provably DOES move them -- otherwise
+        // the assertion above would pass for an object that never resolved.
+        assert_ne!(
+            bare.paragraphs[0].lines, wrapped.paragraphs[0].lines,
+            "{mode:?}: this fixture must actually exercise wrapping"
+        );
+
+        // The floating object is still resolved, still placed, and reports
+        // which mode it took. It excludes nothing, so its exclusion frame has
+        // no area at all.
+        let resolved = &floating.objects[0];
+        assert_eq!(resolved.mode, ObjectLayoutMode::Floating);
+        assert_eq!(resolved.frame, wrapped.objects[0].frame);
+        assert_eq!(resolved.exclusion_frame.width, LayoutUnit::ZERO);
+        assert_eq!(resolved.exclusion_frame.height, LayoutUnit::ZERO);
+    }
+}
+
+/// A floating object never falls back to a centred block, however narrow the
+/// page gets: it is not competing with the text for room, so there is nothing
+/// to scale down for.
+#[test]
+fn a_floating_object_never_falls_back_to_a_centred_block() {
+    let shaped = shaper()
+        .shape_paragraph(&paragraph(
+        "narrow",
+        &[("Words in a very narrow column indeed.", "latin", "en")],
+        ParagraphDirection::LeftToRight,
+        WritingMode::HorizontalTb,
+        TextOrientation::Mixed,
+    ))
+    .unwrap();
+    // Deliberately too narrow to leave a viable fragment on either side.
+    let content = Rect::new(LayoutUnit::ZERO, LayoutUnit::ZERO, q(160 * 64), q(320 * 64));
+    let object = |flow| FlowObject {
+        id: "picture".into(),
+        flow,
+        anchor: TextAnchor {
+            paragraph_id: shaped.id.clone(),
+            utf16_offset: 0,
+            affinity: AnchorAffinity::Downstream,
+        },
+        placement: NormalizedPlacement {
+            inline_position: Normalized::CENTER,
+            block_offset: 0,
+        },
+        size: ObjectSize {
+            ideal_width: q(150 * 64),
+            ideal_height: q(100 * 64),
+            max_inline_fraction: Normalized::END,
+        },
+        exclusion: ExclusionRules {
+            margin: LogicalInsets::uniform(q(8 * 64)),
+            minimum_fragment_width: q(120 * 64),
+        },
+    };
+    let run = |flow| {
+        layout(&LayoutRequest {
+            content,
+            paragraphs: vec![shaped.to_flow_paragraph(paragraph_style())],
+            objects: vec![object(flow)],
+        })
+        .unwrap()
+    };
+    // The wrapped one takes the fallback, which is what makes this fixture the
+    // right one to test the floating case against.
+    assert_eq!(
+        run(ObjectFlow::Wrap).objects[0].mode,
+        ObjectLayoutMode::BlockFallback
+    );
+    assert_eq!(
+        run(ObjectFlow::Float).objects[0].mode,
+        ObjectLayoutMode::Floating
+    );
 }

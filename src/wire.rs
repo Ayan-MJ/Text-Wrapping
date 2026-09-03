@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     layout, AnchorAffinity, Cluster, ExclusionRules, FlowLayout, FlowObject, GlyphOrientation,
     LayoutRequest, LayoutUnit, LogicalInsets, Normalized, NormalizedPlacement,
-    ObjectLayoutMode,
+    ObjectFlow, ObjectLayoutMode,
     ObjectSize, Paragraph, ParagraphDirection, ParagraphStyle, Rect, TextAnchor, TextDirection,
     TextOrientation, WritingMode,
 };
@@ -93,7 +93,19 @@ struct WireObject {
     size: WireSize,
     exclusion: WireExclusion,
     responsive_policy: String,
+    #[serde(default)]
+    flow: WireObjectFlow,
 }
+/// How the words treat an object. Absent on the wire means `wrap`, so every
+/// request written before this field existed still means what it always did.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum WireObjectFlow {
+    #[default]
+    Wrap,
+    Float,
+}
+
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -230,6 +242,7 @@ enum WireAffinityOutput {
 enum WireObjectMode {
     UserPositioned,
     BlockFallback,
+    Floating,
 }
 
 /// Layout JSON boundary shared by the C and WebAssembly ABIs.
@@ -352,6 +365,10 @@ fn decode_request(input: &[u8]) -> Result<LayoutRequest, WireError> {
                     ideal_height: LayoutUnit::from_raw(object.size.ideal_height_q26_6),
                     max_inline_fraction: Normalized::from_raw(object.size.max_inline_u16),
                 },
+                flow: match object.flow {
+                    WireObjectFlow::Wrap => ObjectFlow::Wrap,
+                    WireObjectFlow::Float => ObjectFlow::Float,
+                },
                 exclusion: ExclusionRules {
                     // The v1 flow request is horizontal-ltr only, where the
                     // logical and physical sides coincide.
@@ -424,6 +441,7 @@ fn encode_layout(_request: &LayoutRequest, layout: FlowLayout) -> WireLayout {
                 mode: match object.mode {
                     ObjectLayoutMode::UserPositioned => WireObjectMode::UserPositioned,
                     ObjectLayoutMode::BlockFallback => WireObjectMode::BlockFallback,
+                    ObjectLayoutMode::Floating => WireObjectMode::Floating,
                 },
             })
             .collect(),

@@ -19,7 +19,7 @@ impl OpenTypeTag {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct InvalidOpenTypeTag;
 
 impl fmt::Display for InvalidOpenTypeTag {
@@ -30,27 +30,27 @@ impl fmt::Display for InvalidOpenTypeTag {
 
 impl std::error::Error for InvalidOpenTypeTag {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FontFeature {
     pub tag: OpenTypeTag,
     pub value: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FontVariation {
     pub tag: OpenTypeTag,
     /// OpenType variation coordinate encoded as signed 16.16 fixed point.
     pub value_16_16: i32,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum TextDirection {
     #[default]
     LeftToRight,
     RightToLeft,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum ParagraphDirection {
     #[default]
     Auto,
@@ -58,7 +58,7 @@ pub enum ParagraphDirection {
     RightToLeft,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum WritingMode {
     #[default]
     HorizontalTb,
@@ -72,7 +72,7 @@ impl WritingMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum TextOrientation {
     #[default]
     Mixed,
@@ -80,14 +80,14 @@ pub enum TextOrientation {
     Sideways,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum GlyphOrientation {
     #[default]
     Upright,
     Sideways,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RichTextStyle {
     /// Content-addressed font identifier registered with CanonicalShaper.
     pub font_id: String,
@@ -103,14 +103,14 @@ pub struct RichTextStyle {
     pub strikethrough: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RichTextRun {
     pub utf16_start: u32,
     pub utf16_end: u32,
     pub style: RichTextStyle,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RichParagraph {
     pub id: String,
     pub text: String,

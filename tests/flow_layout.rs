@@ -1,4 +1,5 @@
 use lastdraft_flow::{
+    ObjectFlow,
     layout, normalized_placement_for_drag, AnchorAffinity, Cluster, ExclusionRules, FlowObject,
     GlyphOrientation, LayoutRequest, LayoutUnit, LogicalInsets, Normalized, NormalizedPlacement,
     ObjectLayoutMode, ObjectSize, Paragraph, ParagraphDirection, ParagraphStyle, Rect, TextAnchor,
@@ -49,6 +50,9 @@ fn image(
 ) -> FlowObject {
     FlowObject {
         id: id.to_string(),
+        // Every existing test is a WRAPPED object, which is the default and
+        // what these tests have always meant.
+        flow: ObjectFlow::Wrap,
         anchor: TextAnchor {
             paragraph_id: paragraph_id.to_string(),
             utf16_offset: anchor_offset,

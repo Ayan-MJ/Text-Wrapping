@@ -36,7 +36,7 @@ pub use layout::{
 };
 pub use model::{
     AnchorAffinity, Cluster, ExclusionRules, FlowFragment, FlowLayout, FlowLine, FlowObject,
-    LayoutRequest, NormalizedPlacement, ObjectLayoutMode, ObjectSize, Paragraph, ParagraphLayout,
+    LayoutRequest, NormalizedPlacement, ObjectFlow, ObjectLayoutMode, ObjectSize, Paragraph, ParagraphLayout,
     ParagraphStyle, ResolvedObject, TextAlignment, TextAnchor,
 };
 pub use rich_text::{
