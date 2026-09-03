@@ -214,6 +214,7 @@ mod tests {
             bidi_level: 0,
             direction: TextDirection::LeftToRight,
             orientation: crate::GlyphOrientation::Upright,
+            tate_chu_yoko: false,
             caret_stops: vec![
                 crate::ClusterCaretStop {
                     utf16_offset: start,

@@ -5,7 +5,8 @@ use crate::{
     layout, AnchorAffinity, CanonicalShaper, CaretMovementDirection, EditorGeometrySnapshot,
     EditorTextPosition, ExclusionRules, FlowLayout, FlowObject, GlyphOrientation,
     LogicalInsets,
-    LayoutRequest, LayoutUnit, Normalized, NormalizedPlacement, ObjectLayoutMode, ObjectSize,
+    LayoutRequest, LayoutUnit, Normalized, NormalizedPlacement, ObjectFlow, ObjectLayoutMode,
+    ObjectSize,
     ParagraphStyle, Rect, TextAlignment, TextAnchor, TextDirection, WritingMode,
 };
 
@@ -18,6 +19,52 @@ struct WireEditorSnapshotRequest {
     objects: Vec<WireObject>,
     #[serde(rename = "caretWidthQ26_6", default = "default_caret_width")]
     caret_width_q26_6: i32,
+    /// Which parts of the snapshot to serialize. Absent means all of them, so a
+    /// request written before this existed is unchanged.
+    ///
+    /// The full snapshot for a 10,000-unit letter is ~21 MiB of JSON, most of
+    /// it caret stops, which a painter never reads -- carets are answered by
+    /// querying the held snapshot instead. Encoding and parsing that on every
+    /// keystroke was the single largest cost in the layout path.
+    #[serde(default)]
+    include: Option<Vec<WireSnapshotSection>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum WireSnapshotSection {
+    Lines,
+    Clusters,
+    Glyphs,
+    CaretStops,
+}
+
+/// Which arrays to serialize. `layout` is always present: it is small and it is
+/// what sizes the page.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SnapshotSections {
+    pub lines: bool,
+    pub clusters: bool,
+    pub glyphs: bool,
+    pub caret_stops: bool,
+}
+
+impl Default for SnapshotSections {
+    fn default() -> Self {
+        Self { lines: true, clusters: true, glyphs: true, caret_stops: true }
+    }
+}
+
+impl SnapshotSections {
+    fn from_wire(include: Option<&Vec<WireSnapshotSection>>) -> Self {
+        let Some(include) = include else { return Self::default() };
+        Self {
+            lines: include.contains(&WireSnapshotSection::Lines),
+            clusters: include.contains(&WireSnapshotSection::Clusters),
+            glyphs: include.contains(&WireSnapshotSection::Glyphs),
+            caret_stops: include.contains(&WireSnapshotSection::CaretStops),
+        }
+    }
 }
 
 fn default_caret_width() -> i32 {
@@ -114,7 +161,19 @@ struct WireObject {
     size: WireSize,
     exclusion: WireExclusion,
     responsive_policy: String,
+    #[serde(default)]
+    flow: WireObjectFlow,
 }
+/// How the words treat an object. Absent on the wire means `wrap`, so every
+/// request written before this field existed still means what it always did.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum WireObjectFlow {
+    #[default]
+    Wrap,
+    Float,
+}
+
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -174,7 +233,7 @@ pub(crate) struct WireEditorError {
 pub(crate) fn editor_snapshot_from_json(
     shaper: &CanonicalShaper,
     input: &[u8],
-) -> Result<EditorGeometrySnapshot, WireEditorError> {
+) -> Result<(EditorGeometrySnapshot, SnapshotSections), WireEditorError> {
     let wire: WireEditorSnapshotRequest =
         serde_json::from_slice(input).map_err(|error| wire_error("invalid_json", error))?;
     if !matches!(wire.version, 1 | 2) {
@@ -212,13 +271,15 @@ pub(crate) fn editor_snapshot_from_json(
         objects,
     };
     let flow = layout(&request).map_err(|source| wire_error("layout_error", source))?;
-    EditorGeometrySnapshot::new(
+    let sections = SnapshotSections::from_wire(wire.include.as_ref());
+    let snapshot = EditorGeometrySnapshot::new(
         flow,
         shaped,
         content,
         LayoutUnit::from_raw(wire.caret_width_q26_6),
     )
-    .map_err(|source| wire_error("editor_geometry_error", source))
+    .map_err(|source| wire_error("editor_geometry_error", source))?;
+    Ok((snapshot, sections))
 }
 
 fn decode_object(object: WireObject) -> Result<FlowObject, WireEditorError> {
@@ -242,6 +303,10 @@ fn decode_object(object: WireObject) -> Result<FlowObject, WireEditorError> {
     }
     Ok(FlowObject {
         id: object.id,
+        flow: match object.flow {
+            WireObjectFlow::Wrap => ObjectFlow::Wrap,
+            WireObjectFlow::Float => ObjectFlow::Float,
+        },
         anchor: TextAnchor {
             paragraph_id: object.anchor.paragraph_id,
             utf16_offset: object.anchor.utf16_offset,
@@ -390,6 +455,7 @@ struct WireResolvedObject {
 enum WireObjectMode {
     UserPositioned,
     BlockFallback,
+    Floating,
 }
 
 #[derive(Serialize)]
@@ -489,12 +555,12 @@ struct WirePositionedGlyph {
 }
 
 pub(crate) fn editor_snapshot_json(
-    result: Result<&EditorGeometrySnapshot, WireEditorError>,
+    result: Result<(&EditorGeometrySnapshot, SnapshotSections), WireEditorError>,
 ) -> Vec<u8> {
     let envelope = match result {
-        Ok(snapshot) => WireSnapshotEnvelope {
+        Ok((snapshot, sections)) => WireSnapshotEnvelope {
             version: 2,
-            snapshot: Some(snapshot.into()),
+            snapshot: Some(WireSnapshot::build(snapshot, sections)),
             error: None,
         },
         Err(error) => WireSnapshotEnvelope {
@@ -506,13 +572,16 @@ pub(crate) fn editor_snapshot_json(
     encode(&envelope)
 }
 
-impl<'a> From<&'a EditorGeometrySnapshot> for WireSnapshot<'a> {
-    fn from(snapshot: &'a EditorGeometrySnapshot) -> Self {
+impl<'a> WireSnapshot<'a> {
+    /// An excluded array is emitted EMPTY rather than omitted, so the shape a
+    /// consumer parses never changes -- only its size.
+    fn build(snapshot: &'a EditorGeometrySnapshot, sections: SnapshotSections) -> Self {
         Self {
             layout: (&snapshot.layout).into(),
             lines: snapshot
                 .lines
                 .iter()
+                .filter(|_| sections.lines)
                 .map(|line| WirePositionedLine {
                     paragraph_id: line.paragraph_id.clone(),
                     line_index: line.line_index,
@@ -528,6 +597,7 @@ impl<'a> From<&'a EditorGeometrySnapshot> for WireSnapshot<'a> {
             clusters: snapshot
                 .clusters
                 .iter()
+                .filter(|_| sections.clusters)
                 .map(|cluster| WirePositionedCluster {
                     paragraph_id: cluster.paragraph_id.clone(),
                     utf16_start: cluster.utf16_start,
@@ -541,12 +611,21 @@ impl<'a> From<&'a EditorGeometrySnapshot> for WireSnapshot<'a> {
                     document_line_index: cluster.document_line_index,
                     fragment_index: cluster.fragment_index,
                     visual_index: cluster.visual_index,
-                    caret_stops: cluster.caret_stops.iter().map(Into::into).collect(),
+                    // The per-cluster copy is most of the clusters array, so it
+                    // follows the same flag: a caller that does not want caret
+                    // stops does not want them here either.
+                    caret_stops: cluster
+                        .caret_stops
+                        .iter()
+                        .filter(|_| sections.caret_stops)
+                        .map(Into::into)
+                        .collect(),
                 })
                 .collect(),
             glyphs: snapshot
                 .glyphs
                 .iter()
+                .filter(|_| sections.glyphs)
                 .map(|glyph| WirePositionedGlyph {
                     paragraph_id: glyph.paragraph_id.clone(),
                     run_index: glyph.run_index,
@@ -565,7 +644,12 @@ impl<'a> From<&'a EditorGeometrySnapshot> for WireSnapshot<'a> {
                     fragment_index: glyph.fragment_index,
                 })
                 .collect(),
-            caret_stops: snapshot.caret_stops.iter().map(Into::into).collect(),
+            caret_stops: snapshot
+                .caret_stops
+                .iter()
+                .filter(|_| sections.caret_stops)
+                .map(Into::into)
+                .collect(),
             caret_width_q26_6: snapshot.caret_width().raw(),
             _snapshot: std::marker::PhantomData,
         }
@@ -626,6 +710,7 @@ impl From<&FlowLayout> for WireFlowLayout {
                     mode: match object.mode {
                         ObjectLayoutMode::UserPositioned => WireObjectMode::UserPositioned,
                         ObjectLayoutMode::BlockFallback => WireObjectMode::BlockFallback,
+                        ObjectLayoutMode::Floating => WireObjectMode::Floating,
                     },
                 })
                 .collect(),
@@ -946,6 +1031,7 @@ mod tests {
             include_bytes!("../fixtures/editor/unicode-exclusion-v1.json"),
         )
         .unwrap()
+        .0
     }
 
     #[test]

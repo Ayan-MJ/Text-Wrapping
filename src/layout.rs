@@ -5,7 +5,7 @@ use crate::fixed::{scale_block_offset, scale_ratio};
 use crate::geometry::subtract_intervals;
 use crate::{
     AnchorAffinity, Cluster, FlowFragment, FlowLayout, FlowLine, FlowObject, Interval,
-    Insets, LayoutRequest, LayoutUnit, ObjectLayoutMode, Paragraph, ParagraphLayout, Rect,
+    Insets, LayoutRequest, LayoutUnit, ObjectFlow, ObjectLayoutMode, Paragraph, ParagraphLayout, Rect,
     ResolvedObject, TextAlignment, TextDirection, WritingMode,
 };
 
@@ -478,6 +478,24 @@ fn resolve_object(
             )
         }
     };
+    // A FLOATING object stops here. It excludes nothing, so there are no
+    // fragments to test and no reason to fall back to a centred block. Its
+    // exclusion frame is the empty rect at its own origin: `blocked_intervals`
+    // already skips a band with no area in both writing modes, so a floating
+    // object cannot reach the line breaker at all.
+    if object.flow == ObjectFlow::Float {
+        return ResolvedObject {
+            id: object.id.clone(),
+            anchor: object.anchor.clone(),
+            anchor_reference_top: anchor_reference,
+            anchor_reference_block_start: anchor_reference,
+            frame,
+            exclusion_frame: Rect::new(frame.x, frame.y, LayoutUnit::ZERO, LayoutUnit::ZERO),
+            mode: ObjectLayoutMode::Floating,
+            minimum_fragment_width: LayoutUnit::ZERO,
+        };
+    }
+
     let mut exclusion_frame = clipped_exclusion(frame, margin, content, writing_mode);
 
     let (start_corridor, end_corridor) = match writing_mode {
@@ -612,6 +630,7 @@ fn flow_paragraph(
             .filter(|interval| interval.width() >= minimum_fragment_width)
             .collect();
         let mut fragments = Vec::new();
+        let mut fragment_intervals: Vec<LayoutUnit> = Vec::new();
         let line_start_index = cluster_index;
 
         for (interval_index, interval) in available.iter().copied().enumerate() {
@@ -657,8 +676,20 @@ fn flow_paragraph(
                     utf16_start: start,
                     utf16_end: end,
                 });
+                fragment_intervals.push(interval.width());
                 cluster_index = fit.end_index;
             }
+        }
+
+        // Justify only once the whole line is known, because the LAST line of a
+        // paragraph is never stretched -- that is universal typographic
+        // behaviour, and stretching it is the classic sign of a broken
+        // justifier. A line is the last one when it consumed every remaining
+        // cluster.
+        if paragraph.style.alignment == TextAlignment::Justify
+            && cluster_index < paragraph.clusters.len()
+        {
+            justify_line(&mut fragments, &fragment_intervals, paragraph.writing_mode);
         }
 
         lines.push(FlowLine {
@@ -697,11 +728,9 @@ fn flow_paragraph(
 /// the same rule carries into vertical writing, where the inline axis runs down
 /// the column.
 ///
-/// `Justify` currently resolves as `Start`. Stretching a line needs slack
-/// distributed between its clusters, which is glyph-positioning work in the
-/// snapshot rather than interval arithmetic here; until that exists, a
-/// justified paragraph is set flush at its start edge. A test pins this so it
-/// cannot be mistaken for finished.
+/// `Justify` fills the interval, so its fragment starts at the near edge in
+/// both directions. The slack is spread between the words when the clusters are
+/// placed; see `justify_line` below for which lines get it.
 fn aligned_inline_start(
     interval: Interval,
     used_width: LayoutUnit,
@@ -712,7 +741,8 @@ fn aligned_inline_start(
     let rtl = base_direction == TextDirection::RightToLeft;
     match alignment {
         TextAlignment::Center => interval.start + LayoutUnit::from_raw(slack.raw() / 2),
-        TextAlignment::Start | TextAlignment::Justify => {
+        TextAlignment::Justify => interval.start,
+        TextAlignment::Start => {
             if rtl {
                 interval.end - used_width
             } else {
@@ -724,6 +754,34 @@ fn aligned_inline_start(
                 interval.start
             } else {
                 interval.end - used_width
+            }
+        }
+    }
+}
+
+/// Stretch each fragment on a justified line to fill the space it was given.
+///
+/// Only the fragment's extent changes here. WHERE the slack goes between the
+/// words is decided when the clusters are placed, and it is derived from this
+/// extent rather than carried on the wire: the slack is the fragment's extent
+/// minus the sum of its cluster advances, which is exactly zero on every line
+/// that is not justified. That is why justification needed no ABI change.
+fn justify_line(
+    fragments: &mut [FlowFragment],
+    intervals: &[LayoutUnit],
+    writing_mode: WritingMode,
+) {
+    for (fragment, available) in fragments.iter_mut().zip(intervals.iter().copied()) {
+        match writing_mode {
+            WritingMode::HorizontalTb => {
+                if available > fragment.rect.width {
+                    fragment.rect.width = available;
+                }
+            }
+            WritingMode::VerticalRl | WritingMode::VerticalLr => {
+                if available > fragment.rect.height {
+                    fragment.rect.height = available;
+                }
             }
         }
     }

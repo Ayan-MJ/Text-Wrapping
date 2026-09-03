@@ -286,12 +286,18 @@ impl EditorGeometrySnapshot {
                         });
                     }
                     let visual_indices = visual_cluster_indices(shaped, &logical_indices);
+                    let extra = justification_shares(
+                        shaped,
+                        &visual_indices,
+                        fragment_inline_extent(fragment.rect, shaped.writing_mode),
+                    );
                     let mut cluster_inline = match shaped.writing_mode {
                         WritingMode::HorizontalTb => fragment.rect.x,
                         WritingMode::VerticalRl | WritingMode::VerticalLr => fragment.rect.y,
                     };
-                    for cluster_index in visual_indices {
+                    for (position, cluster_index) in visual_indices.into_iter().enumerate() {
                         let shaped_cluster = &shaped.clusters[cluster_index];
+                        let share = extra.get(position).copied().unwrap_or(LayoutUnit::ZERO);
                         let cluster_rect = match shaped.writing_mode {
                             WritingMode::HorizontalTb => Rect::new(
                                 cluster_inline,
@@ -304,6 +310,25 @@ impl EditorGeometrySnapshot {
                                 cluster_inline,
                                 fragment.rect.width,
                                 shaped_cluster.advance,
+                            ),
+                        };
+                        // Glyphs and caret stops use the cluster's NATURAL box,
+                        // because a justified space must not stretch the letter
+                        // beside it or misplace a caret inside a cluster. Only
+                        // the reported rect grows, so selection and hit-testing
+                        // stay contiguous across the widened gap.
+                        let reported_rect = match shaped.writing_mode {
+                            WritingMode::HorizontalTb => Rect::new(
+                                cluster_rect.x,
+                                cluster_rect.y,
+                                cluster_rect.width + share,
+                                cluster_rect.height,
+                            ),
+                            WritingMode::VerticalRl | WritingMode::VerticalLr => Rect::new(
+                                cluster_rect.x,
+                                cluster_rect.y,
+                                cluster_rect.width,
+                                cluster_rect.height + share,
                             ),
                         };
                         let positioned_stops = positioned_cluster_stops(
@@ -334,14 +359,14 @@ impl EditorGeometrySnapshot {
                             bidi_level: shaped_cluster.bidi_level,
                             orientation: shaped_cluster.orientation,
                             writing_mode: shaped.writing_mode,
-                            rect: cluster_rect,
+                            rect: reported_rect,
                             line_index,
                             document_line_index,
                             fragment_index,
                             visual_index: line_visual_index,
                             caret_stops: positioned_stops,
                         });
-                        cluster_inline += shaped_cluster.advance;
+                        cluster_inline += shaped_cluster.advance + share;
                         line_visual_index += 1;
                     }
                 }
@@ -546,14 +571,22 @@ impl EditorGeometrySnapshot {
                 direction,
                 CaretMovementDirection::Left | CaretMovementDirection::Up
             );
+            // The next stop in visual order, wherever it is. This used to be
+            // confined to the current line, which left the caret stuck at the
+            // end of a wrapped line: pressing Right did nothing at all.
+            //
+            // Stepping onto the same OFFSET with a different affinity is a real
+            // move, not a wasted press -- it is how the caret crosses the gap a
+            // picture leaves in a line, and a soft wrap is the same shape: the
+            // end of one line and the start of the next are two visible places
+            // for one position in the text.
             let candidate = if moves_backward {
                 current_index
                     .checked_sub(1)
                     .and_then(|index| slots.get(index))
             } else {
                 slots.get(current_index + 1)
-            }
-            .filter(|slot| slot.document_line_index == current_slot.document_line_index);
+            };
             (candidate.unwrap_or(current_slot), None)
         } else {
             let wanted_inline =
@@ -663,6 +696,113 @@ fn visual_cluster_indices(shaped: &ShapedParagraph, logical: &[usize]) -> Vec<us
         .collect()
 }
 
+/// Where a caret is drawn for one stop inside one cluster.
+///
+/// A caret lies ACROSS the axis the words run along: a vertical bar in
+/// horizontal writing, a horizontal bar down a vertical column.
+///
+/// A tate-chu-yoko group is the exception, and it is not an arbitrary one. Its
+/// digits are packed side by side ACROSS the column inside a single em cell, so
+/// a caret BETWEEN them has to be a vertical bar between the digits. Drawing it
+/// the usual way put a horizontal line halfway down the cell, cutting through
+/// both digits and pointing at neither. The group's own start and end are
+/// ordinary boundaries with the characters above and below it, so they stay
+/// horizontal.
+fn caret_rect(
+    writing_mode: WritingMode,
+    cluster: &ShapedCluster,
+    stop: &crate::ClusterCaretStop,
+    rect: Rect,
+    caret_width: LayoutUnit,
+) -> Rect {
+    match writing_mode {
+        WritingMode::HorizontalTb => {
+            Rect::new(rect.x + stop.inline_offset, rect.y, caret_width, rect.height)
+        }
+        WritingMode::VerticalRl | WritingMode::VerticalLr => {
+            let interior = cluster.tate_chu_yoko
+                && stop.utf16_offset > cluster.utf16_start
+                && stop.utf16_offset < cluster.utf16_end;
+            if !interior {
+                return Rect::new(rect.x, rect.y + stop.inline_offset, rect.width, caret_width);
+            }
+            // How far through the group this stop sits, mapped onto the axis
+            // the digits are packed along.
+            let across = if cluster.advance > LayoutUnit::ZERO {
+                LayoutUnit::from_raw(
+                    ((stop.inline_offset.raw() as i64 * rect.width.raw() as i64)
+                        / cluster.advance.raw() as i64) as i32,
+                )
+            } else {
+                LayoutUnit::ZERO
+            };
+            Rect::new(rect.x + across, rect.y, caret_width, rect.height)
+        }
+    }
+}
+
+fn fragment_inline_extent(rect: Rect, writing_mode: WritingMode) -> LayoutUnit {
+    match writing_mode {
+        WritingMode::HorizontalTb => rect.width,
+        WritingMode::VerticalRl | WritingMode::VerticalLr => rect.height,
+    }
+}
+
+/// How much extra space follows each cluster of a fragment.
+///
+/// The slack is the fragment's inline extent minus what its clusters actually
+/// measure. On every line that is not justified those are equal, so this
+/// returns nothing and costs one subtraction -- which is why justification
+/// needed no new field on the wire.
+///
+/// WHERE it goes. Between WORDS if the fragment has any spaces, because that is
+/// what justification means and stretching between letters is a last resort.
+/// A fragment with no spaces at all -- a line of Japanese, say -- is stretched
+/// between every character instead, which is exactly how CJK justification
+/// works. A trailing space is not an opportunity: slack after the last cluster
+/// would push the line's end away from the edge it was stretched to reach.
+///
+/// The remainder is dealt out one unit at a time rather than dropped, so the
+/// stretched clusters add up to the slack EXACTLY and the last word lands on
+/// the far edge instead of a rounding error short of it.
+fn justification_shares(
+    shaped: &ShapedParagraph,
+    visual_indices: &[usize],
+    extent: LayoutUnit,
+) -> Vec<LayoutUnit> {
+    let measured: i32 = visual_indices
+        .iter()
+        .map(|index| shaped.clusters[*index].advance.raw())
+        .sum();
+    let slack = extent.raw() - measured;
+    if slack <= 0 || visual_indices.len() < 2 {
+        return Vec::new();
+    }
+
+    let last = visual_indices.len() - 1;
+    let mut opportunities: Vec<usize> = visual_indices
+        .iter()
+        .enumerate()
+        .filter(|(position, index)| {
+            *position < last && shaped.clusters[**index].is_whitespace
+        })
+        .map(|(position, _)| position)
+        .collect();
+    if opportunities.is_empty() {
+        opportunities = (0..last).collect();
+    }
+
+    let count = opportunities.len() as i32;
+    let each = slack / count;
+    let remainder = slack % count;
+    let mut shares = vec![LayoutUnit::ZERO; visual_indices.len()];
+    for (rank, position) in opportunities.into_iter().enumerate() {
+        let extra = each + i32::from((rank as i32) < remainder);
+        shares[position] = LayoutUnit::from_raw(extra);
+    }
+    shares
+}
+
 #[allow(clippy::too_many_arguments)]
 fn positioned_cluster_stops(
     shaped: &ShapedParagraph,
@@ -690,17 +830,13 @@ fn positioned_cluster_stops(
                     utf16_offset: stop.utf16_offset,
                     affinity: *affinity,
                 },
-                rect: match shaped.writing_mode {
-                    WritingMode::HorizontalTb => Rect::new(
-                        rect.x + stop.inline_offset,
-                        rect.y,
-                        caret_width,
-                        rect.height,
-                    ),
-                    WritingMode::VerticalRl | WritingMode::VerticalLr => {
-                        Rect::new(rect.x, rect.y + stop.inline_offset, rect.width, caret_width)
-                    }
-                },
+                rect: caret_rect(
+                    shaped.writing_mode,
+                    cluster,
+                    stop,
+                    rect,
+                    caret_width,
+                ),
                 line_index,
                 document_line_index,
                 fragment_index,
@@ -867,6 +1003,7 @@ mod tests {
             bidi_level: 0,
             direction: TextDirection::LeftToRight,
             orientation: GlyphOrientation::Upright,
+            tate_chu_yoko: false,
             caret_stops: vec![
                 ClusterCaretStop {
                     utf16_offset: start,

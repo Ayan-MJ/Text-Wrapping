@@ -8,7 +8,7 @@ pub const LAYOUT_UNITS_PER_DIP: i32 = 64;
 /// Vertical placement is stored in 1/1024ths of the anchor line height.
 pub const BLOCK_OFFSET_SCALE: i32 = 1024;
 
-#[derive(Clone, Copy, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct LayoutUnit(pub i32);
 
